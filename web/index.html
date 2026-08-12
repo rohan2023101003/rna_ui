@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Road Numbering Evaluation Interface</title>
+<link rel="stylesheet" href="css/app.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>&#128506;</text></svg>">
+</head>
+<body>
+
+<header class="app-header">
+  <div class="brand">
+    <span class="brand-mark" aria-hidden="true"></span>
+    <div>
+      <h1>Road Numbering Evaluation Interface</h1>
+      <p class="brand-sub">Automated road numbering for geospatial maps using search algorithms &mdash; IGARSS&nbsp;2025</p>
+    </div>
+  </div>
+
+  <nav class="tabs" role="tablist" aria-label="Map views">
+    <button class="tab is-active" role="tab" data-tab="input" aria-selected="true">
+      <span class="tab-index">1</span> View input map
+    </button>
+    <button class="tab" role="tab" data-tab="output" aria-selected="false">
+      <span class="tab-index">2</span> View output map
+    </button>
+  </nav>
+
+  <div class="header-meta" id="headerMeta"></div>
+</header>
+
+<main class="app-body">
+
+  <!-- ------------------------------------------------------ sidebar --- -->
+  <aside class="sidebar" id="sidebar">
+
+    <section class="panel">
+      <h2 class="panel-title">Input data</h2>
+
+      <label class="field">
+        <span class="field-label">Dataset</span>
+        <select id="datasetSelect"></select>
+      </label>
+
+      <div class="dropzone" id="dropzone" tabindex="0" role="button"
+           aria-label="Upload an input network folder">
+        <svg viewBox="0 0 24 24" aria-hidden="true" class="dropzone-icon">
+          <path d="M12 16V4m0 0L8 8m4-4 4 4M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/>
+        </svg>
+        <strong>Upload input folder</strong>
+        <span>Drop a network folder here, or click to browse</span>
+        <small>Needs the <code>.shp</code>, <code>.shx</code>, <code>.dbf</code> and
+          <code>.prj</code> files. Any <code>.csv</code> result files included are
+          picked up as algorithm outputs.</small>
+      </div>
+      <input type="file" id="folderInput" webkitdirectory directory multiple hidden>
+      <input type="file" id="fileInput" multiple hidden>
+      <div class="dropzone-actions">
+        <button class="btn btn-ghost btn-sm" id="pickFilesBtn">Choose individual files instead</button>
+      </div>
+      <p class="upload-status" id="uploadStatus" hidden></p>
+    </section>
+
+    <!-- Input tab -------------------------------------------------------->
+    <div class="tab-pane is-active" data-pane="input">
+      <section class="panel">
+        <h2 class="panel-title">Network summary</h2>
+        <dl class="stat-grid" id="networkStats"></dl>
+      </section>
+
+      <section class="panel">
+        <h2 class="panel-title">Layers &amp; style</h2>
+        <label class="switch">
+          <input type="checkbox" id="toggleNodes"><span></span>Show intersections (nodes)
+        </label>
+        <label class="switch">
+          <input type="checkbox" id="toggleNames" checked><span></span>Show street names where available
+        </label>
+        <p class="panel-note field-note" id="namesNote" hidden></p>
+        <label class="switch">
+          <input type="checkbox" id="toggleOrientation"><span></span>Colour by N&ndash;S / E&ndash;W direction
+        </label>
+        <label class="field">
+          <span class="field-label">Road thickness <output id="widthOut">2.0</output></span>
+          <input type="range" id="roadWidth" min="0.5" max="6" step="0.1" value="2">
+        </label>
+      </section>
+    </div>
+
+    <!-- Output tab ------------------------------------------------------->
+    <div class="tab-pane" data-pane="output">
+      <section class="panel">
+        <h2 class="panel-title">Numbering output</h2>
+        <label class="field">
+          <span class="field-label">Algorithm</span>
+          <select id="algorithmSelect"></select>
+        </label>
+        <div class="algo-card" id="algoCard"></div>
+      </section>
+
+      <section class="panel">
+        <h2 class="panel-title">Road numbers</h2>
+        <label class="switch">
+          <input type="checkbox" id="toggleLabels" checked><span></span>Show road numbers
+        </label>
+        <label class="field">
+          <span class="field-label">Label density <output id="densityOut">100%</output></span>
+          <input type="range" id="labelDensity" min="5" max="100" step="5" value="100">
+        </label>
+        <label class="field">
+          <span class="field-label">Colour roads by</span>
+          <select id="colorMode">
+            <option value="black">Black (uniform)</option>
+            <option value="orientation">N&ndash;S vs E&ndash;W (odd / even rule)</option>
+            <option value="partition">Min-cut partition</option>
+            <option value="number">Road number (low &rarr; high)</option>
+            <option value="bucket">Shared numbers (same physical road)</option>
+          </select>
+        </label>
+        <div class="legend" id="legend"></div>
+      </section>
+
+      <section class="panel">
+        <h2 class="panel-title">Find a road</h2>
+        <div class="search-row">
+          <input type="search" id="searchInput" placeholder="Road number or name" autocomplete="off">
+          <button class="btn btn-sm" id="searchBtn">Go</button>
+        </div>
+        <ul class="search-results" id="searchResults"></ul>
+      </section>
+
+      <section class="panel panel-preview">
+        <h2 class="panel-title">
+          Human evaluation task
+          <span class="pill pill-preview">preview</span>
+        </h2>
+        <p class="panel-note">
+          A working sketch of the planned study: some road numbers are blanked out,
+          the participant clicks a blank road and types the number they expect,
+          and the guess is scored against the algorithm's number. Every action is
+          written to the interaction log.
+        </p>
+        <label class="field">
+          <span class="field-label">Roads to blank out <output id="blankOut">10</output></span>
+          <input type="range" id="blankCount" min="1" max="30" step="1" value="10">
+        </label>
+        <div class="btn-row">
+          <button class="btn btn-sm" id="startTaskBtn">Start task</button>
+          <button class="btn btn-ghost btn-sm" id="endTaskBtn" disabled>End &amp; score</button>
+        </div>
+        <div class="task-status" id="taskStatus"></div>
+      </section>
+    </div>
+
+    <section class="panel panel-quiet">
+      <h2 class="panel-title">Interaction log</h2>
+      <p class="panel-note">Objective 4 groundwork &mdash; events stream to
+        <code>logs/events.jsonl</code>.</p>
+      <label class="switch">
+        <input type="checkbox" id="toggleLogging" checked><span></span>Record interactions
+      </label>
+      <dl class="stat-grid stat-grid-compact" id="logStats"></dl>
+    </section>
+  </aside>
+
+  <!-- ---------------------------------------------------------- map --- -->
+  <section class="map-region">
+    <div class="map-toolbar">
+      <div class="map-title" id="mapTitle"></div>
+      <div class="map-tools">
+        <button class="tool" id="zoomIn" title="Zoom in (+)" aria-label="Zoom in">+</button>
+        <button class="tool" id="zoomOut" title="Zoom out (&minus;)" aria-label="Zoom out">&minus;</button>
+        <button class="tool tool-wide" id="fitBtn" title="Fit network to view (F)">Fit</button>
+        <button class="tool tool-wide" id="exportBtn" title="Download the current view as SVG">Export</button>
+      </div>
+    </div>
+
+    <div class="map-canvas" id="map"></div>
+
+    <div class="map-hint">
+      Scroll to zoom &middot; drag to pan &middot; shift+drag to box-zoom &middot;
+      double-click to zoom in &middot; click a road for details
+    </div>
+
+    <div class="map-loading" id="mapLoading" hidden>
+      <div class="spinner"></div><span id="loadingText">Loading network&hellip;</span>
+    </div>
+  </section>
+
+  <!-- ---------------------------------------------------- inspector --- -->
+  <aside class="inspector" id="inspector">
+    <section class="panel">
+      <h2 class="panel-title">Selected road</h2>
+      <div id="inspectorBody" class="inspector-empty">
+        Click any road on the map to see its attributes and assigned number.
+      </div>
+    </section>
+  </aside>
+</main>
+
+<footer class="status-bar">
+  <span id="statusMessage">Ready</span>
+  <span class="status-spacer"></span>
+  <span class="status-item" id="statusCoords">&mdash;</span>
+  <span class="status-item" id="statusLabels">&mdash;</span>
+  <span class="status-item scale-bar" id="scaleBar"><i></i><em>&mdash;</em></span>
+</footer>
+
+<div class="toast-stack" id="toastStack" aria-live="polite"></div>
+
+<script type="module" src="js/app.js"></script>
+</body>
+</html>
