@@ -35,8 +35,8 @@ from datetime import datetime, timezone
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote, urlparse
 
-from rna_ui.rna import dataset as ds
-from rna_ui.rna.dataset import DatasetError
+from rna import dataset as ds
+from rna.dataset import DatasetError
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 WEB_DIR = os.path.join(ROOT, "web")

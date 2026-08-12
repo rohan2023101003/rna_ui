@@ -10,9 +10,14 @@ No third-party packages. Python standard library on the server, plain ES
 modules in the browser.
 
 ```bash
+git clone git@github.com:rohan2023101003/rna_ui.git
+cd rna_ui
 python3 server.py            # then open http://127.0.0.1:8000
 python3 server.py --port 9000 --data ./data --results ./results
 ```
+
+`data/`, `results/` and `web/` are located relative to `server.py`, so the
+server can be launched from any working directory.
 
 ## What it does
 
