@@ -106,10 +106,10 @@ export const CONFIG = {
   //
   // A session file is about 38 KB for four schemes.
   submit: {
-    url: '',
+    url: 'https://script.google.com/macros/s/AKfycbz70yHcfDqias6nWNhWgZMcI7619dFOFYI_aWiPu4tEexQYRqBO0BqJsa7KhlgZ8ibC/exec',
     // An optional email box, so you can thank people or chase a missing file.
     // Never required, and never needed for the results themselves.
-    askEmail: true,
+    askEmail: false,
   },
 };
 
