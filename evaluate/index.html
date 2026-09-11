@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Road Numbering Study</title>
+<link rel="stylesheet" href="study.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>&#128506;</text></svg>">
+</head>
+<body>
+
+<header class="study-header">
+  <span class="study-title">Road numbering study</span>
+  <span class="scheme-badge" id="schemeBadge" hidden></span>
+  <div class="progress"><i id="progressBar"></i></div>
+  <span class="progress-text" id="progressText">getting started</span>
+</header>
+
+<main class="study-main">
+  <!-- Text screens. Each is filled in by study.js when its turn comes. -->
+  <section class="screen page" id="welcome" hidden></section>
+  <section class="screen page" id="identify" hidden></section>
+  <section class="screen page" id="background" hidden></section>
+  <section class="screen page" id="instructions" hidden></section>
+  <section class="screen page" id="questionnaire" hidden></section>
+  <section class="screen page page-wide" id="compare" hidden></section>
+  <section class="screen page" id="finish" hidden></section>
+
+  <!-- The task screen: a prompt bar above a map. -->
+  <section class="screen task-screen" id="task" hidden>
+    <div class="task-prompt" id="taskPrompt" hidden></div>
+    <div class="task-feedback" id="taskFeedback" hidden></div>
+    <div class="map-panel" id="mapPanel">
+      <div class="map-canvas" id="map"></div>
+      <div class="map-tools">
+        <button class="map-tool" id="zoomIn" title="Zoom in" aria-label="Zoom in">+</button>
+        <button class="map-tool" id="zoomOut" title="Zoom out" aria-label="Zoom out">&minus;</button>
+        <button class="map-tool map-tool-wide" id="zoomFit" title="Show the whole map">Whole map</button>
+        <button class="map-tool map-tool-wide" id="zoomTask" title="Go back to the road in question" hidden>Back to road</button>
+      </div>
+      <div class="map-hint">Drag to move &middot; scroll to zoom &middot; or use the buttons</div>
+    </div>
+    <!-- Explains the partition colours and the thicker bucketed roads. Filled
+         in per scheme, because not every scheme has either. -->
+    <div class="map-legend" id="mapLegend" hidden></div>
+  </section>
+</main>
+
+<script type="module" src="js/study.js"></script>
+</body>
+</html>

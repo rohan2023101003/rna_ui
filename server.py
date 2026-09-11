@@ -33,9 +33,11 @@ import time
 import uuid
 from datetime import datetime, timezone
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
+from rna import baselines as rna_baselines
 from rna import dataset as ds
+from rna import evaluate as rna_evaluate
 from rna.dataset import DatasetError
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -56,6 +58,7 @@ class Store:
         self.log_path = log_path
         self._geometry_cache: dict[str, dict] = {}
         self._lock = threading.Lock()
+        self.evaluator = rna_evaluate.Evaluator()
         os.makedirs(self.upload_root, exist_ok=True)
 
     # -- discovery ---------------------------------------------------------
@@ -127,9 +130,58 @@ class Store:
         result["dataset_id"] = dataset_id
         return result
 
+    # -- evaluation --------------------------------------------------------
+
+    def evaluation_setup(self, dataset_id: str, radius: float,
+                         neighbour_mode: str) -> dict:
+        """Metric catalogue plus the rows available to score for this dataset."""
+        entry = self.resolve(dataset_id)
+        context = self.evaluator.context(entry["path"], radius, neighbour_mode)
+
+        rows = [{"id": a["id"], "label": a["label"], "kind": "algorithm",
+                 "family": a["family_label"], "is_baseline": a["is_baseline"]}
+                for a in entry["algorithms"]]
+        rows += [{"id": f"baseline:{key}", "label": meta["label"],
+                  "kind": "baseline", "role": meta["role"],
+                  "summary": meta["summary"]}
+                 for key, meta in rna_baselines.BASELINES.items()]
+
+        return {
+            "dataset": {k: v for k, v in entry.items()
+                        if k not in ("path", "results_path", "algorithms")},
+            "context": context.summary(),
+            "metrics": rna_evaluate.METRIC_CATALOGUE,
+            "rows": rows,
+            "defaults": {
+                "radius": rna_evaluate.DEFAULT_RADIUS,
+                "permutations": rna_evaluate.DEFAULT_PERMUTATIONS,
+            },
+        }
+
+    def evaluation_row(self, dataset_id: str, row_id: str, radius: float,
+                       neighbour_mode: str, permutations: int,
+                       include_numbering: bool = False) -> dict:
+        entry = self.resolve(dataset_id)
+        try:
+            row = self.evaluator.evaluate_row(
+                entry, row_id, radius=radius, neighbour_mode=neighbour_mode,
+                permutations=permutations)
+        except KeyError as exc:
+            raise DatasetError(str(exc)) from exc
+
+        if include_numbering and row_id.startswith("baseline:"):
+            context = self.evaluator.context(entry["path"], radius, neighbour_mode)
+            key = row_id.split(":", 1)[1]
+            numbering = rna_baselines.build(
+                key, segments=context.segments, positions=context.positions,
+                graph=context.graph, orientation=context.orientation)
+            row = dict(row, numbering={str(k): v for k, v in numbering.items()})
+        return row
+
     def invalidate(self) -> None:
         with self._lock:
             self._geometry_cache.clear()
+        self.evaluator.invalidate()
 
     # -- uploads -----------------------------------------------------------
 
@@ -272,6 +324,14 @@ class Handler(SimpleHTTPRequestHandler):
 
     def _route_get(self, path: str) -> None:
         parts = [unquote(p) for p in path.strip("/").split("/")[1:]]
+        query = parse_qs(urlparse(self.path).query)
+
+        def number(name: str, default: float, lo: float, hi: float) -> float:
+            try:
+                return max(lo, min(hi, float(query.get(name, [default])[0])))
+            except (TypeError, ValueError):
+                return default
+
         try:
             if parts == ["datasets"]:
                 self._send_json({"datasets": self.store.catalogue()})
@@ -287,6 +347,21 @@ class Handler(SimpleHTTPRequestHandler):
                 return
             if len(parts) == 5 and parts[0] == "datasets" and parts[3] == "numbering":
                 self._send_json(self.store.numbering("/".join(parts[1:3]), parts[4]))
+                return
+            if len(parts) in (4, 5) and parts[0] == "datasets" and parts[3] == "evaluation":
+                dataset_id = "/".join(parts[1:3])
+                radius = number("radius", rna_evaluate.DEFAULT_RADIUS, 25.0, 5000.0)
+                mode = query.get("mode", ["geometry"])[0]
+                if mode not in ("geometry", "midpoint"):
+                    mode = "geometry"
+                if len(parts) == 4:
+                    self._send_json(self.store.evaluation_setup(dataset_id, radius, mode))
+                else:
+                    perms = int(number("permutations",
+                                       rna_evaluate.DEFAULT_PERMUTATIONS, 0, 9999))
+                    self._send_json(self.store.evaluation_row(
+                        dataset_id, parts[4], radius, mode, perms,
+                        include_numbering=query.get("include", [""])[0] == "numbering"))
                 return
             self._send_error(404, f"no such endpoint: {path}")
         except DatasetError as exc:

@@ -17,6 +17,7 @@ import ast
 import csv
 import math
 import os
+import re
 from typing import Any
 
 from . import algorithms
@@ -299,12 +300,19 @@ def _load_nodes(layer: Layer, to_lonlat: Transform) -> dict:
 # Numbering
 # --------------------------------------------------------------------------
 
+# Some result files were written straight from numpy, so their `edges` column
+# reads `[np.int64(3), np.int64(3)]` rather than `[3, 3]`. That is not a Python
+# literal, so it has to be unwrapped before parsing or every bucketed road in
+# those files silently loses its edge list.
+_NUMPY_SCALAR_RE = re.compile(r"np\.\w+\(\s*([-+0-9.eE]+)\s*\)")
+
+
 def _parse_edge_list(raw: str | None) -> list[int]:
     """Parse the CSV ``edges`` column, which holds a Python-style list literal."""
     if not raw:
         return []
     try:
-        value = ast.literal_eval(raw)
+        value = ast.literal_eval(_NUMPY_SCALAR_RE.sub(r"\1", raw))
     except (ValueError, SyntaxError):
         return []
     if isinstance(value, (list, tuple)):

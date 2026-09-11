@@ -17,6 +17,8 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
 const LOCAL_SPAN = 1000;           // local units across the wider bbox axis
 const MIN_SCALE = 0.05;
 const MAX_SCALE = 6000;
+/** Wheel events closer together than this are one scroll gesture. */
+const GESTURE_GAP_MS = 300;
 
 /** Web Mercator, normalised to the unit square. */
 function mercator(lon, lat) {
@@ -55,6 +57,7 @@ export class MapView {
 
     this.labels = new Map();         // roadId -> string
     this.hiddenLabels = new Set();
+    this.pinnedLabels = new Set();   // always drawn, never dropped for space
     this.labelStyles = new Map();    // roadId -> {className}
     this.selectedId = null;
     this.hoverId = null;
@@ -119,11 +122,21 @@ export class MapView {
     const w = Math.max(1, rect.width);
     const h = Math.max(1, rect.height);
     const changed = w !== this.size.w || h !== this.size.h;
+    // A map built inside a hidden container measures 1x1, so any fit computed
+    // then is meaningless. Fit once, the first time it gains a real size.
+    //
+    // Only once: a container that is hidden and shown again (as the study does
+    // between tasks) goes 1x1 and back each time, and re-fitting on every
+    // reappearance would throw away whatever view the current task had set.
+    const gainedRealSize = !this._hasRealSize && w > 1 && h > 1;
+    if (w > 1 && h > 1) this._hasRealSize = true;
     this.size = { w, h };
     this.svg.setAttribute('viewBox', `0 0 ${w} ${h}`);
     this.svg.setAttribute('width', w);
     this.svg.setAttribute('height', h);
-    if (changed) this.requestRender();
+    if (!changed) return;
+    if (gainedRealSize && this.roads.length) this.fit();
+    else this.requestRender();
   }
 
   // --------------------------------------------------------------- data ---
@@ -145,6 +158,7 @@ export class MapView {
     this.roadsById.clear();
     this.labels.clear();
     this.hiddenLabels.clear();
+    this.pinnedLabels.clear();
     this.labelStyles.clear();
     this.highlighted.clear();
     this.selectedId = null;
@@ -192,6 +206,7 @@ export class MapView {
     this._buildNodes(payload?.nodes);
     this.gOverlay.replaceChildren();
 
+    if (this.size.w > 1 && this.size.h > 1) this._hasRealSize = true;
     this.fit({ animate: false });
     this.emit('network:load', { roads: this.roads.length });
   }
@@ -234,17 +249,29 @@ export class MapView {
     this.requestRender();
   }
 
-  /** Apply a colour to one road; pass `null` to fall back to the base colour. */
+  /**
+   * Apply a colour, a width or a state class to one road.
+   *
+   * Every property is checked with `in` rather than for truthiness, so each one
+   * is left alone unless the caller mentions it, and passing `null` (or `''`
+   * for the class) is how a caller clears it. Both matter: `''` is falsy, and a
+   * caller that changes only the state class must not silently drop a colour
+   * some other layer of the interface put there.
+   */
   setRoadStyle(roadId, style = {}) {
     const road = this.roadsById.get(String(roadId));
     if (!road) return;
-    if (style.color === null || style.color === undefined) {
-      road.el.style.removeProperty('stroke');
-    } else {
-      road.el.style.stroke = style.color;
+    if ('color' in style) {
+      if (style.color == null) road.el.style.removeProperty('stroke');
+      else road.el.style.stroke = style.color;
     }
-    if (style.width != null) road.el.style.strokeWidth = `${style.width}px`;
-    if (style.className) road.el.setAttribute('class', `road ${style.className}`);
+    if ('width' in style) {
+      if (style.width == null) road.el.style.removeProperty('stroke-width');
+      else road.el.style.strokeWidth = `${style.width}px`;
+    }
+    if ('className' in style) {
+      road.el.setAttribute('class', style.className ? `road ${style.className}` : 'road');
+    }
   }
 
   /** Recolour every road at once from a `road -> colour|null` function. */
@@ -272,6 +299,17 @@ export class MapView {
   /** Roads whose label should be withheld - the basis of the guessing task. */
   setHiddenLabels(ids) {
     this.hiddenLabels = new Set((ids || []).map(String));
+    this.requestRender();
+  }
+
+  /**
+   * Labels that must always appear, however crowded the map is.
+   *
+   * Ordinary labels are dropped when they would overlap, which is fine for
+   * background detail but not for the one road a task is asking about.
+   */
+  setPinnedLabels(ids) {
+    this.pinnedLabels = new Set((ids || []).map(String));
     this.requestRender();
   }
 
@@ -316,6 +354,25 @@ export class MapView {
 
   // ------------------------------------------------------------ viewport --
 
+  /**
+   * Refresh the cached size straight away.
+   *
+   * ResizeObserver fires a frame late, so a container that has just been shown
+   * still reports the size it had while hidden. Any method that computes a
+   * transform must therefore measure synchronously first, or it will centre the
+   * map using a 1x1 viewport.
+   */
+  _ensureSized() {
+    const rect = this.container.getBoundingClientRect();
+    if (rect.width <= 1 || rect.height <= 1) return;
+    if (rect.width === this.size.w && rect.height === this.size.h) return;
+    this.size = { w: rect.width, h: rect.height };
+    this.svg.setAttribute('viewBox', `0 0 ${rect.width} ${rect.height}`);
+    this.svg.setAttribute('width', rect.width);
+    this.svg.setAttribute('height', rect.height);
+    this._hasRealSize = true;
+  }
+
   localBounds() {
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     for (const road of this.roads) {
@@ -331,6 +388,7 @@ export class MapView {
   }
 
   fit({ padding = 48 } = {}) {
+    this._ensureSized();
     const b = this.localBounds();
     const w = Math.max(1e-6, b.maxX - b.minX);
     const h = Math.max(1e-6, b.maxY - b.minY);
@@ -352,6 +410,7 @@ export class MapView {
 
   /** Zoom to a road and select it - used by "find road number N". */
   zoomToRoad(roadId, { scale = null } = {}) {
+    this._ensureSized();
     const road = this.roadsById.get(String(roadId));
     if (!road) return false;
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
@@ -377,7 +436,45 @@ export class MapView {
     return true;
   }
 
-  zoomBy(factor, cx = this.size.w / 2, cy = this.size.h / 2) {
+  /**
+   * Frame a set of roads together.
+   *
+   * Used by the navigation task to keep the road you are on and every road you
+   * could step onto on screen at a readable size, instead of zooming to one
+   * road and leaving the options off the edge.
+   */
+  zoomToRoads(roadIds, { padding = 110, maxScale = null } = {}) {
+    this._ensureSized();
+    const roads = (roadIds || []).map((id) => this.roadsById.get(String(id))).filter(Boolean);
+    if (!roads.length) return false;
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const road of roads) {
+      for (const [x, y] of road.coords) {
+        minX = Math.min(minX, x); maxX = Math.max(maxX, x);
+        minY = Math.min(minY, y); maxY = Math.max(maxY, y);
+      }
+    }
+    const w = Math.max(1e-3, maxX - minX);
+    const h = Math.max(1e-3, maxY - minY);
+    const fitted = Math.min((this.size.w - padding) / w, (this.size.h - padding) / h);
+    this.view.k = clamp(maxScale ? Math.min(fitted, maxScale) : fitted, MIN_SCALE, MAX_SCALE);
+    this.view.tx = this.size.w / 2 - ((minX + maxX) / 2) * this.view.k;
+    this.view.ty = this.size.h / 2 - ((minY + maxY) / 2) * this.view.k;
+    this.requestRender();
+    this.emit('view:change', { ...this.view, reason: 'zoom-to-roads' });
+    return true;
+  }
+
+  /**
+   * Zoom about a point.
+   *
+   * `gesture` says what the zoom came from, which is what separates one user
+   * action from the stream of events it produces: a wheel scroll fires five to
+   * thirty `wheel` events, a button press fires one. Counting the events would
+   * measure the input device, not the person, so wheel zooms are coalesced into
+   * one `gesture:zoom` per burst while discrete zooms emit one each.
+   */
+  zoomBy(factor, cx = this.size.w / 2, cy = this.size.h / 2, { gesture = 'step' } = {}) {
     const next = clamp(this.view.k * factor, MIN_SCALE, MAX_SCALE);
     const applied = next / this.view.k;
     this.view.tx = cx - (cx - this.view.tx) * applied;
@@ -385,6 +482,20 @@ export class MapView {
     this.view.k = next;
     this.requestRender();
     this.emit('view:change', { ...this.view, reason: 'zoom' });
+    this._noteZoomGesture(gesture);
+  }
+
+  /** One `gesture:zoom` per wheel burst, or one per discrete zoom. */
+  _noteZoomGesture(kind) {
+    if (kind !== 'wheel') {
+      this.emit('gesture:zoom', { kind, scale: this.view.k });
+      return;
+    }
+    if (!this._wheelBurst) {
+      this.emit('gesture:zoom', { kind, scale: this.view.k });
+    }
+    clearTimeout(this._wheelBurst);
+    this._wheelBurst = setTimeout(() => { this._wheelBurst = null; }, GESTURE_GAP_MS);
   }
 
   panBy(dx, dy) {
@@ -430,6 +541,7 @@ export class MapView {
     let dragging = null;
     let boxZoom = null;
     let moved = 0;
+    let panCounted = false;
 
     svg.addEventListener('pointerdown', (event) => {
       if (event.button !== 0) return;
@@ -439,6 +551,7 @@ export class MapView {
       this._downRoadId = event.target?.dataset?.roadId || null;
       svg.setPointerCapture(event.pointerId);
       moved = 0;
+      panCounted = false;
       const point = this._localPoint(event);
       if (event.shiftKey) {
         boxZoom = { x0: point.x, y0: point.y, x1: point.x, y1: point.y };
@@ -462,6 +575,11 @@ export class MapView {
         const dy = event.clientY - dragging.y;
         moved += Math.abs(dx) + Math.abs(dy);
         dragging = { x: event.clientX, y: event.clientY };
+        // One drag is one gesture, however many move events it produces.
+        if (moved > 4 && !panCounted) {
+          panCounted = true;
+          this.emit('gesture:pan', { kind: 'drag' });
+        }
         this.panBy(dx, dy);
         return;
       }
@@ -477,6 +595,7 @@ export class MapView {
         this._applyZoomBox(boxZoom);
         boxZoom = null;
         this.selectionBox.hidden = true;
+        this.emit('gesture:zoom', { kind: 'box', scale: this.view.k });
       }
       dragging = null;
       this.container.classList.remove('is-panning');
@@ -506,24 +625,31 @@ export class MapView {
 
     svg.addEventListener('dblclick', (event) => {
       const point = this._localPoint(event);
-      this.zoomBy(event.altKey ? 1 / 1.8 : 1.8, point.x, point.y);
+      this.zoomBy(event.altKey ? 1 / 1.8 : 1.8, point.x, point.y,
+                  { gesture: 'double-click' });
     });
 
     svg.addEventListener('wheel', (event) => {
       event.preventDefault();
       const point = this._localPoint(event);
       const factor = Math.exp(-event.deltaY * (event.deltaMode === 1 ? 0.05 : 0.002));
-      this.zoomBy(factor, point.x, point.y);
+      this.zoomBy(factor, point.x, point.y, { gesture: 'wheel' });
     }, { passive: false });
 
     this.container.tabIndex = 0;
     this.container.addEventListener('keydown', (event) => {
       const step = event.shiftKey ? 200 : 60;
+      const key = (dx, dy) => () => {
+        this.panBy(dx, dy);
+        this.emit('gesture:pan', { kind: 'key' });
+      };
+      const zoom = (factor) => () => this.zoomBy(factor, undefined, undefined,
+                                                 { gesture: 'key' });
       const actions = {
-        '+': () => this.zoomBy(1.35), '=': () => this.zoomBy(1.35),
-        '-': () => this.zoomBy(1 / 1.35), '_': () => this.zoomBy(1 / 1.35),
-        ArrowLeft: () => this.panBy(step, 0), ArrowRight: () => this.panBy(-step, 0),
-        ArrowUp: () => this.panBy(0, step), ArrowDown: () => this.panBy(0, -step),
+        '+': zoom(1.35), '=': zoom(1.35),
+        '-': zoom(1 / 1.35), '_': zoom(1 / 1.35),
+        ArrowLeft: key(step, 0), ArrowRight: key(-step, 0),
+        ArrowUp: key(0, step), ArrowDown: key(0, -step),
         f: () => this.fit(), F: () => this.fit(),
         Escape: () => this.select(null),
       };
@@ -543,10 +669,14 @@ export class MapView {
     if (roadId) {
       const road = this.roadsById.get(roadId);
       const point = this._localPoint(event);
-      this.tooltip.hidden = false;
-      this.tooltip.innerHTML = this.options.tooltipHtml
+      const html = this.options.tooltipHtml
         ? this.options.tooltipHtml(road)
         : `<strong>Road ${road.id}</strong>`;
+      // A tooltip builder returning nothing suppresses the tooltip entirely -
+      // the evaluation study needs this so hovering cannot reveal an answer.
+      if (!html) { this.tooltip.hidden = true; return; }
+      this.tooltip.hidden = false;
+      this.tooltip.innerHTML = html;
       const flipX = point.x > this.size.w - 240;
       this.tooltip.style.left = `${point.x + (flipX ? -14 : 14)}px`;
       this.tooltip.style.top = `${point.y + 14}px`;
@@ -628,8 +758,9 @@ export class MapView {
         if (text === undefined) continue;
         const sx = road.mid[0] * k + tx;
         const sy = road.mid[1] * k + ty;
-        if (sx < -margin || sy < -margin ||
-            sx > this.size.w + margin || sy > this.size.h + margin) continue;
+        if (!this.pinnedLabels.has(id)
+            && (sx < -margin || sy < -margin
+                || sx > this.size.w + margin || sy > this.size.h + margin)) continue;
         wanted.push({ id, text, sx, sy, road });
       }
       // Priority: selected road, then highlighted, then hidden-label prompts,
@@ -651,7 +782,9 @@ export class MapView {
       const w = 11 + candidate.text.length * 6.6;
       const h = 16;
       const box = [candidate.sx - w / 2, candidate.sy - h / 2, w, h];
-      const forced = candidate.id === this.selectedId || this.hiddenLabels.has(candidate.id);
+      const forced = candidate.id === this.selectedId
+        || this.hiddenLabels.has(candidate.id)
+        || this.pinnedLabels.has(candidate.id);
 
       if (!forced && lastSeen) {
         const previous = lastSeen.get(candidate.text);
@@ -733,6 +866,7 @@ export class MapView {
 // -------------------------------------------------------------- helpers ---
 
 function score(candidate, view) {
+  if (view.pinnedLabels.has(candidate.id)) return 1e10;
   if (candidate.id === view.selectedId) return 1e9;
   if (view.hiddenLabels.has(candidate.id)) return 1e8;
   if (view.highlighted.has(candidate.id)) return 1e7;

@@ -9,6 +9,7 @@
  */
 
 import { api, readFileAsBase64, relevantFiles } from './api.js';
+import { EvaluationView } from './evaluate.js';
 import { InteractionLogger } from './logger.js';
 import { MapView } from './mapview.js';
 
@@ -18,6 +19,8 @@ const $ = (id) => document.getElementById(id);
 const CATEGORICAL = ['#0072B2', '#E69F00', '#009E73', '#CC79A7',
                      '#56B4E9', '#D55E00', '#8C6BB1', '#4C7A32'];
 const RAMP = ['#2c3d8f', '#3d7fb8', '#4cae9b', '#c9c14a', '#e07a2f', '#a8322a'];
+/* Neutral fill for roads whose number is withheld during the task. */
+const WITHHELD_COLOR = '#9aa4b0';
 
 const state = {
   datasets: [],
@@ -29,10 +32,15 @@ const state = {
   colorMode: 'black',
   buckets: new Map(),   // "partition:number" -> [roadId]
   task: null,
+  reference: null,      // a baseline numbering being previewed on the map
 };
 
 const map = new MapView($('map'), { tooltipHtml: buildTooltip });
 const logger = new InteractionLogger();
+const evaluation = new EvaluationView({
+  logger,
+  onViewNumbering: previewReferenceNumbering,
+});
 
 /* ------------------------------------------------------------ bootstrap -- */
 
@@ -83,7 +91,22 @@ function switchTab(name) {
   for (const pane of document.querySelectorAll('.tab-pane')) {
     pane.classList.toggle('is-active', pane.dataset.pane === name);
   }
+
+  // The evaluation table needs the full width, so it replaces the map and the
+  // inspector rather than squeezing in beside them.
+  const evaluating = name === 'evaluate';
+  $('mapRegion').hidden = evaluating;
+  $('evalRegion').hidden = !evaluating;
+  document.querySelector('.app-body').classList.toggle('is-evaluating', evaluating);
+
   logger.log('tab:switch', { tab: name });
+
+  if (evaluating) {
+    if (state.datasetId && evaluation.datasetId !== state.datasetId) {
+      evaluation.load(state.datasetId);
+    }
+    return;
+  }
 
   if (name === 'output' && state.network && !state.numbering) {
     const first = $('algorithmSelect').value;
@@ -91,6 +114,77 @@ function switchTab(name) {
     else refreshMap();
   } else {
     refreshMap();
+  }
+}
+
+/**
+ * Draw one of the reference orderings (Hilbert, RCM, spectral, …) on the map,
+ * so a baseline can be compared with an algorithm visually and not only through
+ * the table. Useful for producing figures for the paper.
+ *
+ * The reference is shaped exactly like an algorithm result so it flows through
+ * the normal render path - labels, colour modes, inspector and search all work
+ * on it unchanged.
+ */
+async function previewReferenceNumbering(rowId, label) {
+  if (!state.datasetId) return;
+  showLoading(true, `Building ${label}…`);
+  try {
+    const result = await api.evaluationRow(
+      state.datasetId, rowId, evaluation.settings(), 'numbering');
+    if (!result.numbering) {
+      toast('That row carries no numbering to draw', 'error');
+      return;
+    }
+
+    const numbering = {};
+    const values = [];
+    for (const [roadId, number] of Object.entries(result.numbering)) {
+      numbering[roadId] = { road_no: number, seq: null };
+      values.push(number);
+    }
+
+    state.numbering = {
+      id: rowId,
+      label,
+      isReference: true,
+      summary: result.info?.summary || 'Reference ordering, not an algorithm output.',
+      stages: [],
+      modifiers: [],
+      depth: null,
+      is_baseline: false,
+      partitioned: false,
+      bucketed: false,
+      numbering,
+      stats: {
+        numbered: values.length,
+        matched: values.length,
+        unmatched: 0,
+        unassigned: 0,
+        min_number: Math.min(...values),
+        max_number: Math.max(...values),
+        distinct_numbers: new Set(values).size,
+        odd_count: values.filter((v) => v % 2).length,
+        even_count: values.filter((v) => v % 2 === 0).length,
+        partition_count: 0,
+        shared_number_groups: 0,
+      },
+    };
+    state.algorithm = rowId;
+    state.task = null;
+
+    indexBuckets(state.numbering);
+    renderAlgorithmCard(state.numbering);
+    resetTaskUI();
+    switchTab('output');
+    refreshMap();
+    setStatus(`${label} — reference ordering, ${values.length} roads numbered`);
+    toast(`Showing ${label} on the map`, 'ok');
+    logger.log('evaluation:preview', { dataset: state.datasetId, row: rowId });
+  } catch (err) {
+    toast(`Could not draw ${label}: ${err.message}`, 'error');
+  } finally {
+    showLoading(false);
   }
 }
 
@@ -157,6 +251,10 @@ async function loadDataset(datasetId) {
     if (state.tab === 'output') {
       const first = $('algorithmSelect').value;
       if (first) await loadNumbering(first);
+    } else if (state.tab === 'evaluate') {
+      await evaluation.load(datasetId);
+    } else {
+      evaluation.datasetId = null;   // reload lazily when the tab is opened
     }
   } catch (err) {
     toast(`Failed to load ${datasetId}: ${err.message}`, 'error');
@@ -256,6 +354,7 @@ async function loadNumbering(algorithmId) {
     $('algorithmSelect').value = algorithmId;
 
     indexBuckets(result);
+    autoColourForPartitions(result);
     renderAlgorithmCard(result);
     resetTaskUI();
     refreshMap();
@@ -276,6 +375,25 @@ async function loadNumbering(algorithmId) {
   }
 }
 
+/**
+ * Partitioned algorithms restart their counter in every partition, so the same
+ * road number appears several times across the map. Colouring by partition is
+ * the only way to tell those apart, so switch to it automatically - but never
+ * override a colour mode the user chose deliberately.
+ */
+function autoColourForPartitions(result) {
+  const partitioned = (result.stats?.partition_count || 0) > 1;
+  const select = $('colorMode');
+  if (partitioned && state.colorMode === 'black') {
+    state.colorMode = 'partition';
+  } else if (!partitioned && state.colorMode === 'partition') {
+    state.colorMode = 'black';
+  } else {
+    return;
+  }
+  select.value = state.colorMode;
+}
+
 /** Group roads that were given the same number - one physical road, many segments. */
 function indexBuckets(result) {
   state.buckets = new Map();
@@ -292,6 +410,20 @@ function bucketKey(entry) {
 
 function renderAlgorithmCard(result) {
   const s = result.stats;
+
+  if (result.isReference) {
+    $('algoCard').innerHTML = `
+      <h3>${escapeHtml(result.label)}</h3>
+      <div class="algo-file">reference ordering — not an algorithm output</div>
+      <p>${escapeHtml(result.summary)}</p>
+      <div class="algo-badges">
+        <span class="badge is-warn">reference</span>
+        <span class="badge">numbers ${s.min_number}–${s.max_number}</span>
+        <span class="badge">${s.odd_count} odd / ${s.even_count} even</span>
+      </div>`;
+    return;
+  }
+
   const badges = [];
   if (result.is_baseline) {
     badges.push('<span class="badge is-warn">reference baseline</span>');
@@ -398,7 +530,10 @@ function applyColorMode() {
     const span = Math.max(1, hi - lo);
     map.colorBy((road) => {
       const entry = numbering[road.id];
-      return entry ? rampColor((entry.road_no - lo) / span) : null;
+      // The ramp encodes the number, so a withheld road must stay neutral -
+      // otherwise its colour gives the answer away against the legend.
+      if (!entry || isNumberWithheld(road.id)) return WITHHELD_COLOR;
+      return rampColor((entry.road_no - lo) / span);
     });
     return;
   }
@@ -411,6 +546,9 @@ function applyColorMode() {
     map.colorBy((road) => {
       const entry = numbering[road.id];
       if (!entry) return null;
+      // Sharing a bucket colour with its neighbours would reveal which road
+      // this one continues, and therefore its number.
+      if (isNumberWithheld(road.id)) return WITHHELD_COLOR;
       return colorOf.get(bucketKey(entry)) || '#c2c9d2';
     });
   }
@@ -443,8 +581,10 @@ function renderMapTitle() {
       `· ${state.network.stats.total_length_km} km</span>`,
   ];
   if (showOutput) {
-    lines.push(`<span class="mt-algo">${escapeHtml(state.numbering.label)} ` +
-               `· ${escapeHtml(state.numbering.id)}.csv</span>`);
+    lines.push(`<span class="mt-algo">${escapeHtml(state.numbering.label)}` +
+               (state.numbering.isReference
+                 ? ' · reference ordering</span>'
+                 : ` · ${escapeHtml(state.numbering.id)}.csv</span>`));
   }
   $('mapTitle').innerHTML = lines.join('');
 }
@@ -501,7 +641,9 @@ function bindMapEvents() {
     if (!roadId) { clearInspector(); map.setHighlighted([]); return; }
     renderInspector(roadId);
     const entry = state.numbering?.numbering[roadId];
-    if (entry && state.tab === 'output') {
+    // Lighting up the other segments that share the number points straight at
+    // the answer, so withheld roads get no highlight.
+    if (entry && state.tab === 'output' && !isNumberWithheld(roadId)) {
       const mates = state.buckets.get(bucketKey(entry)) || [];
       map.setHighlighted(mates.length > 1 ? mates.filter((id) => id !== roadId) : []);
     } else {
@@ -527,12 +669,25 @@ function bindMapEvents() {
   map.on('network:load', () => renderScaleBar());
 }
 
+/**
+ * True while a road's number is being withheld for the evaluation task.
+ *
+ * Every surface that could show or encode a road number has to consult this,
+ * otherwise the participant can simply read off the answer instead of
+ * reasoning about it.
+ */
+function isNumberWithheld(roadId) {
+  return Boolean(state.task?.pending.has(String(roadId)));
+}
+
 function buildTooltip(road) {
   const rows = [`<strong>${escapeHtml(road.props.name || `Road segment ${road.id}`)}</strong>`];
   const entry = state.numbering?.numbering[road.id];
   if (state.tab === 'output' && entry) {
-    rows.push(`<div class="tt-row">Road number <span class="tt-no">${entry.road_no}</span>` +
-              `${entry.partition != null ? ` · partition ${entry.partition}` : ''}</div>`);
+    rows.push(isNumberWithheld(road.id)
+      ? '<div class="tt-row tt-hidden">Road number hidden — click to answer</div>'
+      : `<div class="tt-row">Road number <span class="tt-no">${entry.road_no}</span>` +
+        `${entry.partition != null ? ` · partition ${entry.partition}` : ''}</div>`);
   }
   rows.push(`<div class="tt-row">${road.props.length_m} m · ` +
             `${road.props.orientation === 'NS' ? 'North–South' : 'East–West'}</div>`);
@@ -611,7 +766,9 @@ function renderInspector(roadId) {
     if (entry.partition != null) numberFacts.push(['Partition', entry.partition]);
   }
 
-  const mates = entry ? (state.buckets.get(bucketKey(entry)) || []) : [];
+  // Naming the shared number, or listing the segments that carry it, would
+  // hand over the answer just as plainly as printing it.
+  const mates = entry && !isBlank ? (state.buckets.get(bucketKey(entry)) || []) : [];
   const bucketBlock = mates.length > 1 ? `
     <div class="inspect-section">
       <h4>Shares number ${entry.road_no} with ${mates.length - 1} other segment(s)</h4>
@@ -739,10 +896,12 @@ function runSearch() {
   const matches = [];
   for (const road of map.roads) {
     const entry = numbering[road.id];
-    const number = entry ? String(entry.road_no) : null;
+    const withheld = isNumberWithheld(road.id);
+    // Searching a number must not locate a road whose number is withheld.
+    const number = entry && !withheld ? String(entry.road_no) : null;
     const name = (road.props.name || '').toLowerCase();
     if (number === query || (name && name.includes(query)) || road.id === query) {
-      matches.push({ road, entry });
+      matches.push({ road, entry, withheld });
     }
     if (matches.length >= 40) break;
   }
@@ -756,11 +915,11 @@ function runSearch() {
     return;
   }
 
-  for (const { road, entry } of matches) {
+  for (const { road, entry, withheld } of matches) {
     const li = document.createElement('li');
     const button = document.createElement('button');
     button.innerHTML =
-      `<span class="result-no">${entry ? entry.road_no : '–'}</span>` +
+      `<span class="result-no">${withheld ? '?' : (entry ? entry.road_no : '–')}</span>` +
       `<span class="result-name">${escapeHtml(road.props.name || `Segment ${road.id}`)}</span>` +
       `<span class="result-meta">${road.props.length_m} m</span>`;
     button.addEventListener('click', () => {
@@ -791,8 +950,12 @@ function exportSvg() {
   if (state.tab === 'output' && state.algorithm) parts.push(state.algorithm);
   link.href = url;
   link.download = `${parts.join('_')}.svg`;
+  link.style.display = 'none';
+  document.body.append(link);
   link.click();
-  URL.revokeObjectURL(url);
+  // Revoking straight away can cancel the download before the browser has read
+  // the blob, so hold the URL until it is certainly finished.
+  setTimeout(() => { link.remove(); URL.revokeObjectURL(url); }, 60000);
   logger.log('export', { format: 'svg', dataset: state.datasetId, algorithm: state.algorithm });
   toast('Map exported as SVG', 'ok');
 }
@@ -961,6 +1124,7 @@ function startTask() {
   };
 
   applyTaskLabels();
+  applyColorMode();          // repaint so withheld roads drop to neutral
   map.select(null);
   $('startTaskBtn').disabled = true;
   $('endTaskBtn').disabled = false;
@@ -1012,6 +1176,7 @@ function bindAnswerBox(roadId) {
     map.setLabel(roadId, String(guess));
     map.setLabelStyle(roadId, 'is-answered');
     map.setRoadStyle(roadId, { className: '' });
+    applyColorMode();        // answered: this road may show its colour again
 
     const delta = Math.abs(guess - actual);
     const feedback = $('answerFeedback');

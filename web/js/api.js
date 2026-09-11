@@ -18,6 +18,16 @@ export const api = {
   numbering: (datasetId, algorithm) =>
     request(`/api/datasets/${datasetId}/numbering/${encodeURIComponent(algorithm)}`),
 
+  evaluationSetup: (datasetId, { radius, mode }) =>
+    request(`/api/datasets/${datasetId}/evaluation`
+            + `?radius=${radius}&mode=${encodeURIComponent(mode)}`),
+
+  evaluationRow: (datasetId, rowId, { radius, mode, permutations }, include) =>
+    request(`/api/datasets/${datasetId}/evaluation/${encodeURIComponent(rowId)}`
+            + `?radius=${radius}&mode=${encodeURIComponent(mode)}`
+            + `&permutations=${permutations}`
+            + (include ? `&include=${encodeURIComponent(include)}` : '')),
+
   upload: (payload) => request('/api/upload', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

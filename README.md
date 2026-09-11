@@ -19,6 +19,25 @@ python3 server.py --port 9000 --data ./data --results ./results
 `data/`, `results/` and `web/` are located relative to `server.py`, so the
 server can be launched from any working directory.
 
+> **Running the human study?** See **[evaluate/README.md](evaluate/README.md)** —
+> a self-contained 30-minute study that participants run in their browser with
+> no install and no server, on any of the six networks with any 2-6 of the
+> seventeen numbering schemes, plus the script that turns their result files
+> into the final numbers.
+>
+> **Planning the human study?** See
+> **[HCI_EVALUATION_METHODS.md](HCI_EVALUATION_METHODS.md)** — which human
+> evaluation methods go in the paper, which are rejected and why, each explained
+> from scratch with formulas and worked examples.
+>
+> **New to the automatic evaluation?** Start with
+> **[EVALUATION_GUIDE.md](EVALUATION_GUIDE.md)** — a plain-language guide to
+> what each measurement means, how to run it, and how to read the numbers.
+> Assumes no background.
+>
+> [EVALUATION.md](EVALUATION.md) is the longer research plan behind it,
+> including the human studies not yet run.
+
 ## What it does
 
 **Tab 1 — View input map.** The cleaned road network exactly as supplied, with
@@ -32,8 +51,17 @@ into the paper's three steps. Roads can be coloured by min-cut partition,
 by N–S/E–W direction, by road number, or by which segments were bucketed into
 one physical road.
 
-Both tabs share one map with wheel zoom, drag pan, shift+drag box-zoom,
-double-click zoom, keyboard control (`+` `-` arrows `F` `Esc`), hover
+**Tab 3 — Evaluate.** Scores every numbering against standard spatial
+statistics (Moran's *I*, Geary's *C* with permutation nulls, Mantel *r*),
+graph-labelling measures (bandwidth and profile against Reverse Cuthill-McKee),
+locality references (Hilbert curve), address quality (bucket contiguity,
+dispersion, ARI against real street names) and task simulations (greedy
+routing, delivery-tour ratio). Six reference baselines are included so the
+numbers have a floor and a ceiling to be read against, and any of them can be
+drawn on the map. See [EVALUATION.md](EVALUATION.md) for every formula.
+
+The first two tabs share one map with wheel zoom, drag pan, shift+drag
+box-zoom, double-click zoom, keyboard control (`+` `-` arrows `F` `Esc`), hover
 tooltips, click-to-inspect, a live scale bar and cursor coordinates.
 
 ## Uploading your own network
@@ -78,11 +106,32 @@ rna/
   projection.py        inverse Transverse Mercator -> WGS84
   algorithms.py        decodes `middfs_BucsGP_d5` into a readable description
   dataset.py           discovery, GeoJSON conversion, CSV join
+  geometry.py          local metric frame, polyline distance, grid index, Hilbert
+  graph.py             line graph, BFS, Cuthill-McKee, Fiedler vector
+  metrics.py           every evaluation metric
+  baselines.py         random / coordinate / Hilbert / RCM / spectral orderings
+  evaluate.py          orchestration, metric catalogue, caching
+evaluate/              the human study - see evaluate/README.md
+  index.html           the whole study, one page, no server needed
+  js/design.js         which schemes, what order, which roads
+  js/scheme.js         network loading; partitions, buckets, colours
+  js/tasks.js          the three participant tasks
+  js/study.js          screen flow and session state
+  build_bundle.py      bakes all 6 networks x 17 algorithms into js/
+  tests/check_design.mjs  checks the design without a browser
+  tests/check_review.mjs  checks the review screen against a real DOM
+  tests/check_metrics.py  checks every measure against a hand-computed answer
+  aggregate.py         40 result files -> final results + tidy CSV
+analysis/
+  test_metrics.py      86 self-tests for the metrics
+  verify_metrics.py    the EVALUATION.md worked example
+  confound.py          the Metric 1 range-confound sweep
 web/
   index.html
   css/app.css
   js/mapview.js        SVG renderer: projection, zoom/pan, labels, hit-testing
   js/app.js            controller: tabs, panels, inspector, upload, task
+  js/evaluate.js       evaluation table, confound diagnostic, CSV export
   js/logger.js         batched interaction logging
   js/api.js
 uploads/               uploaded datasets (created on first upload)
@@ -96,6 +145,8 @@ logs/events.jsonl      interaction log (created on first event)
 | `GET /api/datasets` | bundled + uploaded datasets, with their algorithm lists |
 | `GET /api/datasets/<city>/<network>` | roads + nodes as WGS84 GeoJSON |
 | `GET /api/datasets/<city>/<network>/numbering/<algorithm>` | one algorithm's numbers |
+| `GET /api/datasets/<city>/<network>/evaluation` | metric catalogue + network structure |
+| `GET /api/datasets/<city>/<network>/evaluation/<row>` | score one algorithm or baseline |
 | `POST /api/upload` | add a dataset (JSON, base64 file contents) |
 | `POST /api/events` / `GET /api/events` | append / read interaction events |
 
@@ -148,9 +199,20 @@ map.on('road:click' | 'road:select' | 'view:change' | 'pointer:move', fn)
   inspector marks them "diagonal road — rule not applicable". Every parity
   mismatch found in the modified algorithms was one of these, within 0.3° of
   the boundary — the rule otherwise holds exactly.
-- **`road_no = 0`** appears once each in six partitioned MIDDFS result files,
-  meaning that road was never assigned. It is shown as "not assigned" rather
-  than as road number 0, and is excluded from the evaluation task.
+- **Two roads can share a number, for two different reasons.** Min-cut
+  partitioning (Step 1) restarts the numbering inside each partition, so a
+  number appears once per partition — 1309 of Hyderabad Network-2's 1351 roads
+  share a number under `mucs_GP`, and **none** of those pairs are inside one
+  partition. Bucketing (Step 2) gives every segment of one physical road the
+  same number — 939 roads under `mucs_B`, and **all** of those are inside one
+  partition, with every one of the 264 groups connected in the road graph. The
+  output map can colour by either, and the human study draws partitions in
+  different colours and bucketed roads slightly thicker.
+- **`road_no = 0`** means a road was never assigned a number. The algorithm fix
+  cleared most of these; two remain, both on road 192 of Melbourne/Network-1
+  (`middfs_GP_d5` and `middfs_BGP_d5`, where the `edges` list is also empty).
+  Such roads are shown as "not assigned" rather than as road number 0, and are
+  excluded from the evaluation task.
 - The unmodified **BFS and DFS** baselines break the odd/even rule widely
   (e.g. 171 of 873 segments in Brooklyn Network-2), consistent with the
   paper's finding that node-based traversal does not cover road numbering

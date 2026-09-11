@@ -25,6 +25,9 @@
     <button class="tab" role="tab" data-tab="output" aria-selected="false">
       <span class="tab-index">2</span> View output map
     </button>
+    <button class="tab" role="tab" data-tab="evaluate" aria-selected="false">
+      <span class="tab-index">3</span> Evaluate
+    </button>
   </nav>
 
   <div class="header-meta" id="headerMeta"></div>
@@ -153,6 +156,49 @@
       </section>
     </div>
 
+    <!-- Evaluate tab ----------------------------------------------------->
+    <div class="tab-pane" data-pane="evaluate">
+      <section class="panel">
+        <h2 class="panel-title">Evaluation settings</h2>
+        <p class="panel-note">Scores every numbering against standard spatial
+          statistics, graph-labelling measures and task simulations. See
+          <code>EVALUATION.md</code> for the formulas.</p>
+        <label class="field">
+          <span class="field-label">Buffer radius <output id="radiusOut">250 m</output></span>
+          <input type="range" id="evalRadius" min="50" max="1000" step="25" value="250">
+        </label>
+        <label class="field">
+          <span class="field-label">Permutations <output id="permsOut">199</output></span>
+          <input type="range" id="evalPerms" min="0" max="999" step="50" value="199">
+        </label>
+        <label class="field">
+          <span class="field-label">Neighbour distance</span>
+          <select id="evalMode">
+            <option value="geometry">Between road geometries (as published)</option>
+            <option value="midpoint">Between road midpoints (faster)</option>
+          </select>
+        </label>
+      </section>
+
+      <section class="panel">
+        <h2 class="panel-title">Rows to score</h2>
+        <div class="btn-row">
+          <button class="btn btn-ghost btn-sm" id="evalSelectAll">Select all</button>
+          <button class="btn btn-ghost btn-sm" id="evalSelectKey">Key subset</button>
+          <button class="btn btn-ghost btn-sm" id="evalSelectNone">None</button>
+        </div>
+        <div class="row-picker" id="evalRowPicker"></div>
+        <div class="btn-row" style="margin-top:11px">
+          <button class="btn" id="evalRun">Run evaluation</button>
+          <button class="btn btn-ghost btn-sm" id="evalExport" disabled>Export CSV</button>
+        </div>
+        <div class="eval-progress" id="evalProgress" hidden>
+          <div class="eval-progress-bar"><i id="evalProgressBar"></i></div>
+          <span id="evalProgressText"></span>
+        </div>
+      </section>
+    </div>
+
     <section class="panel panel-quiet">
       <h2 class="panel-title">Interaction log</h2>
       <p class="panel-note">Objective 4 groundwork &mdash; events stream to
@@ -165,7 +211,8 @@
   </aside>
 
   <!-- ---------------------------------------------------------- map --- -->
-  <section class="map-region">
+  <div class="work-region">
+  <section class="map-region" id="mapRegion">
     <div class="map-toolbar">
       <div class="map-title" id="mapTitle"></div>
       <div class="map-tools">
@@ -187,6 +234,28 @@
       <div class="spinner"></div><span id="loadingText">Loading network&hellip;</span>
     </div>
   </section>
+
+  <!-- ----------------------------------------------------- evaluate --- -->
+  <section class="eval-region" id="evalRegion" hidden>
+    <header class="eval-head">
+      <div>
+        <h2 id="evalTitle">Evaluation</h2>
+        <p id="evalSubtitle"></p>
+      </div>
+      <div class="eval-groups" id="evalGroups"></div>
+    </header>
+
+    <div class="eval-body" id="evalBody">
+      <div class="eval-empty" id="evalEmpty">
+        <h3>Nothing scored yet</h3>
+        <p>Pick the numberings to compare on the left, then run the evaluation.
+          Reference baselines &mdash; a random permutation as the floor and a
+          Hilbert curve as the ceiling &mdash; are included so the scores have
+          something to be read against.</p>
+      </div>
+    </div>
+  </section>
+  </div>
 
   <!-- ---------------------------------------------------- inspector --- -->
   <aside class="inspector" id="inspector">

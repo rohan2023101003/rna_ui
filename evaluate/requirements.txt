@@ -1,0 +1,6 @@
+# Needed only by evaluate/aggregate.py, which analyses the returned result
+# files. The study itself (index.html) needs nothing installed at all.
+pandas>=2.0
+numpy>=1.24
+statsmodels>=0.14
+matplotlib>=3.7

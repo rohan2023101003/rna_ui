@@ -8,7 +8,16 @@ venv/
 uploads/
 logs/
 
+# Node. Only the tests need it - the study itself has no build step.
+node_modules/
+package-lock.json
+
 # Editor / OS
 .vscode/
 .idea/
 .DS_Store
+
+# Study data. The repo is public for GitHub Pages, so participants' result
+# files must never be committed to it.
+evaluate/results/*.json
+evaluate/output/
