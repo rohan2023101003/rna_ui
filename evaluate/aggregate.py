@@ -693,14 +693,6 @@ def main() -> int:
             print(f"  {city.ljust(16)} matches home: {g['matches_home'].mean():.2f}"
                   f"    could be real: {g['could_be_real'].mean():.2f}   (n={len(g)})")
 
-    sus = [s["sus"]["score"] for s in sessions
-           if s.get("sus") and s["sus"].get("score") is not None]
-    if sus:
-        print("\n" + "-" * 78)
-        print(f"  THE WEBSITE ITSELF (SUS): {np.mean(sus):.1f} / 100")
-        print("  68 is the published average. This checks the tool was not the")
-        print("  obstacle - it is not a comparison between schemes.")
-
     # -- files -------------------------------------------------------------
     os.makedirs(OUT_DIR, exist_ok=True)
     df.to_csv(os.path.join(OUT_DIR, "trials.csv"), index=False)

@@ -128,8 +128,7 @@ the numbers yet.
 | **Practice** | All three activities on a small fixed map, **with the answers shown** — 2 guesses, 1 search, 1 journey. Not recorded | 4 min |
 | **One block per scheme** (4 by default) | Each: 14 guesses → 4 road-finds → 3 journeys → 6 workload sliders | ~5 min each |
 | Preference | every pairing of the schemes side by side (6 pairs for 4 schemes) | 2 min |
-| Context | How well each city's numbering matched their expectations | 2 min |
-| Website usability | 10 questions about the site itself | 1 min |
+| Context | How well each city's numbering matched their expectations, plus a free-text comment | 2 min |
 | Done | Their answers are **sent automatically**. Nothing to download, nothing to email | seconds |
 
 The four schemes are shown as **A, B, C and D**. Participants are never told
@@ -459,7 +458,19 @@ formula is given because "error rate" on its own is not a definition.
 | **Mental demand, Frustration** | those two sliders on their own, since they are the ones a numbering scheme should move | low |
 | **Preference** | every pairing of the schemes, ranked by **Bradley–Terry**: each scheme gets a strength where P(i beats j) = sᵢ/(sᵢ+sⱼ), so beating a strong scheme counts for more than beating a weak one. 1.0 is average | high |
 | **Contextual appropriateness** | two 1–7 ratings per city, plus a free-text comment | high |
-| **SUS** | standard System Usability Scale, 0–100. This checks *the website* was not the obstacle; it is not a comparison between schemes | high |
+
+> **Why there is no usability questionnaire.** An earlier draft ended with a
+> 10-item System Usability Scale. It was removed, because it cannot contribute
+> to this paper: SUS is answered once, about the website, so it is *constant
+> across schemes* within a participant and can never separate them. The
+> objection it is usually there to answer — "these differences are artefacts of
+> your custom interface" — is answered by the design instead, and answered
+> better: every scheme is judged through the same interface, by the same person,
+> in a counterbalanced order. An interface effect that applied equally to all
+> four schemes cannot produce a difference *between* them. A single SUS number
+> could not have ruled out an interface×scheme interaction anyway, and the
+> minute it cost came at the worst possible moment — right before the step where
+> the results are submitted.
 
 ### Does the trial count change any of these?
 
@@ -541,7 +552,7 @@ python3 evaluate/tests/check_metrics.py
 Builds sessions whose right answer is known by construction — "this person found
 3 of 4 roads, with wrong-click counts 0, 2, 4, 6" — and asserts the pipeline
 reproduces every number, including each interaction counter separately, the
-Bradley–Terry ranking, the Raw TLX reversal and the SUS scoring.
+Bradley–Terry ranking and the Raw TLX reversal.
 
 ```bash
 node evaluate/tests/check_design.mjs
@@ -698,13 +709,15 @@ function doPost(e) {
   DriveApp.getFolderById(FOLDER_ID).createFile(name, text, MimeType.PLAIN_TEXT);
 
   // One row per participant, so you can see at a glance who has finished.
+  // Columns: when, participant, map, schemes, scored trials, warm-up trials,
+  //          email, file name.
   SpreadsheetApp.openById(SHEET_ID).getSheets()[0].appendRow([
     new Date(),
     data.participantId,
     data.city,
     (data.schemes || []).map(function (s) { return s.algorithm; }).join(' '),
     data.trials.length,
-    data.sus ? data.sus.score : '',
+    (data.practiceTrials || []).length,
     data.email || '',
     name,
   ]);

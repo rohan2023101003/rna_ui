@@ -10,7 +10,7 @@
  *
  *   welcome -> participant number -> background -> choose a map -> practice
  *     -> [ for each of 4 blocks:  infer, find, navigate, NASA-TLX ]
- *     -> preference -> context -> SUS -> download
+ *     -> preference -> context -> send
  *
  * The four blocks are four of the seventeen numbering schemes, drawn and
  * ordered by design.js from the participant number alone. They are never named
@@ -83,7 +83,6 @@ const state = {
   tlx: [],
   preference: [],
   context: [],
-  sus: null,
   // What the code was configured to do when this session started. A session
   // saved under different settings cannot be resumed into this one.
   config: null,
@@ -269,7 +268,7 @@ async function run() {
     .map((b) => ({ label: b.algorithm.label, algorithm: b.algorithm.key }));
   save();
 
-  const totalSteps = blocks.length * 5 + 3;
+  const totalSteps = blocks.length * 5 + 2;
   let step = 0;
 
   for (const block of blocks) {
@@ -282,8 +281,6 @@ async function run() {
   await preferenceScreen();
   progress(++step, totalSteps);
   await contextScreen(blocks);
-  progress(++step, totalSteps);
-  await susScreen();
   progress(++step, totalSteps);
 
   state.finishedAt = new Date().toISOString();
@@ -594,7 +591,9 @@ function setupScreen() {
       const t = askTrials ? typed() : counts;
       const pairs = (n * (n - 1)) / 2;
       const practice = practiceSetup().counts;
-      const seconds = 240
+      // 180s of fixed overhead: consent, participant number, background, the
+      // between-block screens and the closing questions.
+      const seconds = 180
         + practice.infer * 20 + practice.find * 45 + practice.navigate * 70
         + n * ((t.infer || 0) * 15 + (t.find || 0) * 35 + (t.navigate || 0) * 60 + 65)
         + pairs * 25;
@@ -1072,51 +1071,6 @@ async function contextScreen(blocks) {
   }
 }
 
-const SUS_ITEMS = [
-  'I think that I would like to use this website frequently.',
-  'I found the website unnecessarily complex.',
-  'I thought the website was easy to use.',
-  'I think that I would need help from a technical person to use this website.',
-  'I found the various functions in this website were well integrated.',
-  'I thought there was too much inconsistency in this website.',
-  'I would imagine that most people would learn to use this website very quickly.',
-  'I found the website very awkward to use.',
-  'I felt very confident using the website.',
-  'I needed to learn a lot of things before I could get going with this website.',
-];
-
-async function susScreen() {
-  if (state.sus) return;
-  const items = SUS_ITEMS.map((text, i) => `
-    <div class="sus-item">
-      <p>${i + 1}. ${text}</p>
-      <div class="sus-scale">
-        ${[1, 2, 3, 4, 5].map((v) => `
-          <label><input type="radio" name="sus${i}" value="${v}"><span>${v}</span></label>`).join('')}
-      </div>
-      <div class="sus-ends"><span>Strongly disagree</span><span>Strongly agree</span></div>
-    </div>`).join('');
-
-  const el = await screen('questionnaire', `
-    <h1>Last page: about the website itself</h1>
-    <p>Not about the road numbers this time - about how easy the website was to
-      use. Ten quick statements.</p>
-    ${items}
-    <div class="btn-row"><button class="btn btn-big" id="next">Finish</button></div>`);
-
-  const answers = SUS_ITEMS.map((_, i) => {
-    const checked = el.querySelector(`input[name="sus${i}"]:checked`);
-    return checked ? Number(checked.value) : null;
-  });
-  // Standard SUS scoring: odd items score value-1, even items score 5-value,
-  // and the total is multiplied by 2.5 to land on a 0-100 scale.
-  const complete = answers.every((v) => v !== null);
-  const score = complete
-    ? answers.reduce((sum, v, i) => sum + (i % 2 === 0 ? v - 1 : 5 - v), 0) * 2.5
-    : null;
-  state.sus = { answers, score };
-  save();
-}
 
 // -- finish ----------------------------------------------------------------
 

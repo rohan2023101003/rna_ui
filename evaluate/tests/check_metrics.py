@@ -71,7 +71,7 @@ def nav_trial(i, algo, arrived, moves, shortest, errors=0, backtracks=0, ms=3000
 
 
 def session(pid, trials, tlx=None, counts=None, schemes=None, preference=None,
-            sus=None, practice=None):
+            practice=None):
     return {
         "version": 2, "participantId": pid,
         "startedAt": "2026-09-11T09:00:00Z", "finishedAt": "2026-09-11T09:30:00Z",
@@ -82,7 +82,7 @@ def session(pid, trials, tlx=None, counts=None, schemes=None, preference=None,
                        "familiarity": {"Brooklyn": 3}},
         "trials": trials, "practiceTrials": practice or [],
         "tlx": tlx or [], "preference": preference or [],
-        "context": [], "sus": sus,
+        "context": [],
         "userAgent": "test", "screen": None, "_file": f"P{pid}.json",
     }
 
@@ -257,11 +257,6 @@ tlx = [{"blockIndex": 0, "algorithm": "mucs", "scheme": "Scheme A",
         "rawTlx": (60 + 20 + 40 + (100 - 80) + 50 + 30) / 6}]
 frame = agg.tlx_frame([session(7, trials, tlx=tlx)])
 check("raw TLX  (60+20+40+20+50+30)/6", frame["raw_tlx"].iloc[0], 220 / 6)
-
-# SUS: odd items score value-1, even items 5-value, total x 2.5.
-answers = [5, 1, 5, 1, 5, 1, 5, 1, 5, 1]        # the best possible answers
-score = sum((v - 1) if i % 2 == 0 else (5 - v) for i, v in enumerate(answers)) * 2.5
-check("SUS, perfect answers", score, 100.0)
 
 # Bradley-Terry: A beats B every time, B beats C every time.
 prefs = ([{"leftAlgorithm": "mucs", "rightAlgorithm": "bfs", "chose": "mucs", "ms": 1}] * 6

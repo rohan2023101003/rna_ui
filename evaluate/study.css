@@ -553,25 +553,6 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 .tlx-head span { font-size: 14px; color: var(--text-soft); }
 .tlx-ends { display: flex; justify-content: space-between; font-size: 12px; color: var(--text-faint); margin-top: 4px; }
 
-.sus-item { padding: 14px 0; border-bottom: 1px solid var(--border); }
-.sus-item p { margin-bottom: 10px; font-size: 15px; }
-.sus-scale { display: flex; gap: 8px; }
-.sus-scale label {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 4px;
-  padding: 8px 0;
-  background: var(--surface);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius);
-  cursor: pointer;
-  font-size: 14px;
-}
-.sus-scale label:has(input:checked) { background: var(--accent-soft); border-color: var(--accent); font-weight: 700; }
-.sus-scale input { accent-color: var(--accent); }
-.sus-ends { display: flex; justify-content: space-between; font-size: 12px; color: var(--text-faint); margin-top: 5px; }
 
 /* ---------------------------------------------------------- comparison -- */
 
