@@ -1,8 +1,8 @@
 # The Human Evaluation Study
 
 A self-contained 30-minute study that participants run in their browser.
-Nothing to install for them, no server, no login. They finish, download one
-file, and send it to you.
+Nothing to install for them, no server, no login. When they finish, their
+answers are sent to you automatically.
 
 ---
 
@@ -33,10 +33,9 @@ only need for this check — the study itself has no build step):
 node evaluate/tests/check_design.mjs
 ```
 
-That draws all 40 participants' sessions without a browser and checks every
-trial has an answer that is on the map, every journey's destination is
-reachable, the four schemes are distinct and evenly spread over the seventeen,
-and the presentation order is balanced.
+That plans every trial the study can produce, without a browser, and checks
+every rule in *How trials are chosen* trial by trial — see *Checking the
+arithmetic* for all five test suites.
 
 ### Step 2 — Try it yourself locally
 
@@ -68,10 +67,10 @@ their own.
 Leave `submit.url` empty and the last screen asks the participant to download a
 file and send it to you. That works, and it is where people drop out.
 
-**Put a URL in `submit.url` and the last screen becomes one button.** Their
-answers post straight to you; they never touch a file. See
-[Getting the results back automatically](#getting-the-results-back-automatically)
-below for the two five-minute options.
+**Put a URL in `submit.url` and there is nothing for them to do.** Their answers
+are posted to you the moment they finish; they never touch a file. See
+[Hosting it, step by step](#hosting-it-step-by-step), Part 3, for the
+five-minute setup.
 
 ### Step 5 — Invite the 40 participants
 
@@ -87,13 +86,14 @@ correctly if each number is used exactly once. Keep a list of who got what.
 > Open this link and enter that number:
 > https://your-username.github.io/rna_ui/evaluate/
 >
-> At the end you will get a results file — please send it back via this form:
-> <your Google Form link>
+> Your answers are sent automatically when you finish — please keep the tab
+> open until it says "Sent".
 
 ### Step 6 — Collect the files
 
-Save every result file into `evaluate/results/`. Names look like
-`rna-study-P07.json`. One file per participant.
+They arrive in your Drive folder as people finish, one `rna-study-P07_….json`
+per participant. When you are ready, download the folder and unzip it into
+`evaluate/results/`.
 
 ### Step 7 — Get the results
 
@@ -108,6 +108,7 @@ Prints the results table and writes into `evaluate/output/`:
 |---|---|
 | `trials.csv` | one row per scored trial — the raw table for any further analysis |
 | `practice.csv` | one row per warm-up trial, recorded but not analysed |
+| `ratings.csv` | the real-city rating and comment, one row per participant per scheme |
 | `summary.csv` | the printed results table as a spreadsheet |
 | `models.txt` | mixed-effects models testing whether the differences are real |
 | `figures/*.png` | one bar chart per measure, with error bars |
@@ -125,19 +126,17 @@ the numbers yet.
 | Participant number | The number you sent them | 1 min |
 | Background | Age range, map use, familiarity with each city | 1 min |
 | **Choose a map** | They pick one of the **six networks** (a small and a large one for each of Brooklyn, Hyderabad and Melbourne); everything then happens on that map. *While `schemeSelection` is `'ask'` this screen also carries the setup box — see below.* | 1 min |
-| **Practice** | All three activities on a small fixed map, **with the answers shown** — 2 guesses, 1 search, 1 journey. Not recorded | 4 min |
-| **One block per scheme** (4 by default) | Each: 14 guesses → 4 road-finds → 3 journeys → 6 workload sliders | ~5 min each |
-| Preference | every pairing of the schemes side by side (6 pairs for 4 schemes) | 2 min |
-| Context | How well each city's numbering matched their expectations, plus a free-text comment | 2 min |
+| **Practice** | The odd/even rule is explained, then all three activities on a small fixed map, **with the answers shown** — 2 guesses, 1 search, 1 journey. Recorded separately, not analysed | 4 min |
+| **One block per scheme** (4 by default) | Each: 14 guesses → 4 road-finds → 3 journeys → 6 workload sliders → one 1–7 rating and an optional comment about that scheme | ~5 min each |
 | Done | Their answers are **sent automatically**. Nothing to download, nothing to email | seconds |
 
 The four schemes are shown as **A, B, C and D**. Participants are never told
 which is which, so nobody tries to be helpful about "the good one". Which four
 of the seventeen they get, and in what order, comes from their participant
-number alone — see *Which four schemes* below.
+number alone — see *Which schemes, and how many* below.
 
-Practice is **identical for everyone** and is never recorded — see *The warm-up*
-below.
+Practice is **identical for everyone**, and recorded apart from the scored
+trials — see *The warm-up* below.
 
 ---
 
@@ -151,7 +150,7 @@ trial is the same thing:
 | **Map** | `Hyderabad/Network-1` — the smallest of the six at 83 roads and under 3 km, so the whole thing fits on screen |
 | **Scheme** | `mucs_BGP` — partitioned **and** bucketed |
 | **Trials** | 2 guesses, 1 search, 1 journey — all three tasks |
-| **Recorded?** | No. Practice answers are discarded |
+| **Recorded?** | Yes, in a separate list, never mixed with the scored trials — see *The warm-up is recorded too* |
 
 Three deliberate choices there:
 
@@ -209,7 +208,8 @@ clicks, give-ups, and how much panning and zooming it took.
 time to reach a target **number**. The road they are on is green, and **every
 road they can actually step onto is outlined in blue**. Measures route deviation
 (their route ÷ the shortest) and wayfinding errors (steps that move them further
-from the goal).
+from the goal). The shortest route is counted in **steps**, with distance on the
+ground recorded beside it — see *Steps, with distance alongside* below.
 
 When the journey ends, **both routes are drawn**: the one they took in green,
 and the shortest one that existed in dashed orange, with both written out as
@@ -297,6 +297,151 @@ their own list rather than being filtered out of one shared list.
 
 ---
 
+## The odd/even rule
+
+The paper numbers roads by one convention: **roads running north–south get odd
+numbers, roads running east–west get even numbers**. Participants are told this
+before practice, it stays on screen under the map in every trial, and a north
+arrow sits in the corner of the map, because the rule means nothing without it.
+
+It is told rather than left to be discovered because it is part of the numbering
+system, not a hint about it — the way drivers are told that odd US interstates
+run north–south. A real city using this numbering would publish it.
+
+**Telling people favours no scheme.** Every one of the 17 was generated with the
+rule. Measured across all six networks:
+
+| Schemes | Roads that obey the rule |
+|---|---|
+| the 15 modified schemes | 99.7–99.9% |
+| plain `bfs`, `dfs` | about 86% |
+
+A scheme gains from the rule being known only by actually keeping it, which is
+exactly the property claimed for it. Telling everyone the same sentence is what
+makes that a fair test.
+
+Two things are recorded on every guess, and they are kept apart because they are
+different findings:
+
+| Field | Means |
+|---|---|
+| `ruleFollowed` | the participant's guess had the parity the road's direction calls for |
+| `ruleHolds` | the scheme's real number has it too |
+
+A participant who follows the rule on a road where the scheme breaks it gets the
+parity wrong — and that is the rule failing them, not them failing the task.
+`showParityRule: false` in `js/design.js` hides the rule, which turns the
+guessing task into discovering it unaided; that is a different question, and not
+one the paper asks.
+
+---
+
+## How trials are chosen
+
+Not simply at random, and this matters more than it sounds. Random sampling was
+**measured against the shipped data first**, and it failed in ways that bias the
+very comparison the study exists to make:
+
+| Problem with plain random sampling | Small networks |
+|---|---|
+| a block asked the same number twice, so the second time its answer had just been shown | 28–44% of blocks |
+| a *find road N* target had just been revealed as an earlier guess's answer | ~28% of searches |
+| a journey's goal had already been shown earlier in the block | ~30% of journeys |
+| find targets landed on multi-segment roads, versus their share of numbers | 4× over-represented |
+
+All of these bite hardest on **partitioned and bucketed schemes**, which have the
+fewest distinct numbers — so those schemes would have looked better for reasons
+that have nothing to do with how good their numbering is.
+
+The rules now, strongest first:
+
+**Never**
+- use the same road twice in a block, or guess the same physical road twice;
+- ask a guess whose answer the block later asks you to find or travel to;
+- ask you to find or travel to a number an earlier trial has already located.
+
+**Avoid** — relaxed only when a small network runs out, and recorded when it is
+- two guesses with the same number in different zones;
+- a trial on a road that shares a junction with the trial just before it.
+
+Find targets are drawn **uniformly over numbers**, not roads, so a road split into
+fifteen segments is not fifteen times as likely to be asked. Each block also
+draws its roads from its own share of the network, so the blocks of one session
+test different roads.
+
+> **Why spacing is applied to the order, not the choice.** A first version
+> filtered the choice for spacing, and measuring it showed a new bias: a number
+> spread over many segments is more likely to touch an earlier pick, so the most
+> heavily bucketed schemes lost their multi-segment numbers — the easy ones to
+> find — more often than chance allows (z = −3.6). Choosing with the hard rules
+> alone and then arranging the order keeps the choice uniform (worst |z| = 1.45,
+> mean z = −0.03 across schemes) and still removes adjacency.
+
+Verified by `tests/check_design.mjs` on **every trial** of 6 blocks × 17 schemes ×
+6 networks at the default 14/4/3:
+
+| | Result |
+|---|---|
+| answers revealed before they are asked | **0** |
+| same physical road guessed twice in a block | **0** |
+| blocks shorter than configured | **0** |
+| trial next to the one before it | ≤ 0.4%, each one flagged |
+| same number reused across zones | 0 on five networks. On Brooklyn/Network-1: 2.5% of trials across all 17 schemes, but 7.1% for a set with two partitioned schemes (`mucs_BGP` alone, 12 of 84). Each is flagged |
+| guess roads reused across blocks | 0 on the large networks; 1–12% on the small ones, which do not have enough roads |
+
+Every trial carries a `relaxed` list naming any soft rule it needed, so a
+sensitivity analysis can drop those trials in one line.
+
+> **Small maps have a ceiling.** Because answers are never repeated, a
+> partitioned scheme — whose numbering restarts in every zone — can run out of
+> distinct numbers on a small map at high trial counts. The setup screen asks the
+> real planner and warns you before that happens. At the defaults, every network
+> and scheme supplies every trial.
+>
+> Short of running out, a small map can still force some guesses to reuse a
+> number already answered in another zone. For `mucs`, `mucs_BGP`,
+> `middfs_BucsGP_d5` and `bfs` at the defaults that happens on
+> **Brooklyn/Network-1 only** — 7.1% of trials — and on none of the other five
+> networks. So if a partitioned scheme is in your final set, **do not fix
+> Brooklyn/Network-1 as the study map**. The setup screen warns about this too.
+
+---
+
+## Time: recorded, never shown
+
+There is **no running clock** in any task. A visible timer is a manipulation,
+not a neutral display: it pushes people to trade accuracy for speed, and pushes
+hardest on the hardest schemes — so it would change the very numbers being
+compared. Every duration is recorded silently.
+
+The two tasks with a limit say so up front (*"You have up to 2 minutes for each
+road"*), and in the last 30 seconds of a trial a notice appears, so nobody is cut
+off without warning. Whether that notice was shown is recorded as `warned`.
+
+---
+
+## Steps, with distance alongside
+
+The shortest route in Task 3 is counted in **steps** — roads stepped onto. That
+is the primary measure, for three reasons: one click *is* one step, so it is what
+the participant actually does; it is unambiguous; and it matches the paper's own
+connectivity metrics, which count hops (`sHop` in Metrics 2 and 3).
+
+Distance on the ground is recorded beside it, because a route with fewer but
+longer roads can win on steps and lose on metres:
+
+| Field | Means |
+|---|---|
+| `routeMetres` | length of the route taken |
+| `shortestMetres` | length of the shortest route by distance (Dijkstra), to the nearest road with the target number |
+| `routeDeviationMetres` | the first divided by the second |
+
+A step is counted midpoint to midpoint — half of each road — which is symmetric
+and does not depend on which end of a road someone is imagined to enter.
+`aggregate.py` reports route deviation both ways.
+
+---
+
 ## Why two roads can share a number
 
 This is not a rendering fault — it is what the algorithm produced, and both
@@ -371,9 +516,9 @@ count costs you in the analysis — see *Does the trial count change any of
 these?* below.
 
 > **One scheme is allowed** and is the quickest way to check an algorithm end to
-> end. With one there is nothing to compare against, so the side-by-side round
-> is skipped and the models have no contrast to work with. It is a way to look
-> at a scheme, not a way to get a result.
+> end. With one there is nothing to compare against, so the models have no
+> contrast to work with. It is a way to look at a scheme, not a way to get a
+> result.
 
 > **This screen must not be shown to participants.** It names the algorithms,
 > and the blinding depends on them not knowing which scheme is which. There is a
@@ -396,7 +541,7 @@ Once you and your advisor have chosen, name them:
 schemeSelection: 'fixed',
 fixedSchemes: ['mucs', 'mucs_BGP', 'middfs_BucsGP_d5', 'bfs'],
 citySelection: 'fixed',
-fixedCity: 'Brooklyn/Network-1',
+fixedCity: 'Brooklyn/Network-2',
 trialSelection: 'fixed',
 trials: { infer: 14, find: 4, navigate: 3 },
 practice: 3,
@@ -425,6 +570,7 @@ formula is given because "error rate" on its own is not a definition.
 | Measure | Exactly what is computed | Better |
 |---|---|---|
 | **Parity agreement** | proportion of guesses whose odd/even matches the answer's. 50% is chance | high |
+| **Guess follows the odd/even rule** | proportion of guesses with the parity the road's direction calls for. Roads with no clear direction are left out | high |
 | **Inference error** | mean of `|guess − answer| ÷ (highest number − lowest number in that scheme)`. Dividing by the scheme's own range is what makes a scheme numbering to 1353 comparable with one numbering to 18 | low |
 | **Inference success rate** | proportion of guesses within 10% of the range. The 10% is fixed in `INFER_SUCCESS_TOLERANCE`, set in advance | high |
 | **Time per guess** | median seconds per guess (median, not mean, so one interruption does not move it) | low |
@@ -446,7 +592,8 @@ formula is given because "error rate" on its own is not a definition.
 | Measure | Exactly what is computed | Better |
 |---|---|---|
 | **Journey completion** | proportion of journeys where a road carrying the target number was reached | high |
-| **Route deviation** | median of `steps taken ÷ shortest possible steps`, over completed journeys. 1.00 is a perfect route | low |
+| **Route deviation (steps)** | median of `steps taken ÷ shortest possible steps`, over completed journeys. 1.00 is a perfect route | low |
+| **Route deviation (distance)** | the same, in metres: `route length ÷ shortest route length` | low |
 | **Wayfinding errors** | mean steps per journey that left the participant no closer to the nearest road with the target number | low |
 | **Backtracks** | mean uses of "undo last step" per journey | low |
 
@@ -456,8 +603,30 @@ formula is given because "error rate" on its own is not a definition.
 |---|---|---|
 | **NASA-TLX workload** | Raw TLX: the six sliders averaged, with "your performance" reversed first (`100 − value`), per the standard scoring | low |
 | **Mental demand, Frustration** | those two sliders on their own, since they are the ones a numbering scheme should move | low |
-| **Preference** | every pairing of the schemes, ranked by **Bradley–Terry**: each scheme gets a strength where P(i beats j) = sᵢ/(sᵢ+sⱼ), so beating a strong scheme counts for more than beating a weak one. 1.0 is average | high |
-| **Contextual appropriateness** | two 1–7 ratings per city, plus a free-text comment | high |
+
+The six dimensions are Hart & Staveland's, unchanged. Their *descriptions* are
+written in terms of this study — "how much physical work was it, clicking,
+dragging, zooming the map?" rather than the generic "how much physical activity
+was required?" — which is ordinary practice and makes them answerable. Two
+deliberate restraints: *confusion* is left out of Frustration, because it
+belongs to Mental Demand and would blur the two; and no item mentions the
+numbering scheme, because the heading over the sliders already does, once, for
+all six. Time pressure will sit near the floor for most people, since there is
+no visible clock — that is expected, and it doubles as a check that the
+30-second warning is not creating pressure of its own.
+| **Could be used in a real city** | 1–7 agreement with *"I could imagine a numbering like this being used in a real city"*, asked **after each block about that scheme**. Buttons with no default, so an untouched answer cannot pass for a middle one | high |
+
+The optional comment asked with it — *"What, if anything, felt wrong about this
+numbering?"* — is written to `output/ratings.csv` against its scheme.
+
+> **Why the rating moved, and the comparison round went.** The real-city question
+> used to be asked once, at the very end, after all four schemes — one number
+> that could not be attributed to any of them, the same flaw that removed the
+> usability questionnaire below. Asked per block it belongs to one scheme and
+> becomes a comparison. The side-by-side preference round was removed: it asked
+> people to judge schemes from two small maps at the end of the session, from
+> memory of blocks up to half an hour old, and the per-scheme rating now answers
+> the same question at the moment the scheme is fresh.
 
 > **Why there is no usability questionnaire.** An earlier draft ended with a
 > 10-item System Usability Scale. It was removed, because it cannot contribute
@@ -551,19 +720,29 @@ python3 evaluate/tests/check_metrics.py
 
 Builds sessions whose right answer is known by construction — "this person found
 3 of 4 roads, with wrong-click counts 0, 2, 4, 6" — and asserts the pipeline
-reproduces every number, including each interaction counter separately, the
-Bradley–Terry ranking and the Raw TLX reversal.
+reproduces every number, including each interaction counter separately, both
+route deviations, both rule measures and the Raw TLX reversal.
 
 ```bash
 node evaluate/tests/check_design.mjs
 ```
 
-also verifies, for all 1,224 journeys the design can generate, that the shortest
-route shown afterwards is a genuine chain of connected roads, is exactly as long
-as `shortestHops` says, starts where the trial starts and ends on the target
-number.
+plans every trial of 6 blocks × 17 schemes × 6 networks and asserts every rule in
+*How trials are chosen* trial by trial, that find targets are uniform over
+numbers, and that every shortest route shown — by steps and by distance — is a
+genuine chain of connected roads of exactly the recorded length.
 
-All four suites at once:
+```bash
+node evaluate/tests/check_flow.mjs
+```
+
+plays a participant through the **whole study** in a real DOM — consent, setup,
+every practice task, two scored blocks, the end-of-block questions, the automatic
+send — clicking the same buttons and roads a person would, then opens the file
+that would have been sent and checks every field the analysis relies on.
+`fetch` is replaced first, so nothing is ever posted to the real address.
+
+All five suites at once:
 
 ```bash
 npm install      # once: jsdom, the only dependency, and only the tests need it
@@ -574,6 +753,7 @@ npm test
 |---|---|
 | `evaluate/tests/check_design.mjs` | schemes, ordering, trial selection, routes, the warm-up |
 | `evaluate/tests/check_review.mjs` | the review screen, against a real DOM |
+| `evaluate/tests/check_flow.mjs` | the whole study end to end, and the result file it sends |
 | `evaluate/tests/check_metrics.py` | every measure against a hand-computed answer |
 | `analysis/test_metrics.py` | the automatic (non-human) metrics |
 
@@ -594,7 +774,7 @@ by the participant or fixed for everyone — see `citySelection` in
 > city they know, so familiarity contaminates the comparison, and it splits 40
 > participants across 6 networks (~7 each) which is too few to compare schemes
 > within any one of them. Set `citySelection: 'fixed'` and `fixedCity:
-> 'Brooklyn/Network-1'` (or whichever) and all 40 people give data on the same
+> 'Brooklyn/Network-2'` (or any map the setup screen shows no warning for) and all 40 people give data on the same
 > map.
 
 **Participants never choose their schemes.** Which schemes are compared is set
@@ -602,12 +782,19 @@ before anyone is invited — by you, once, in `js/design.js`. What the participa
 number decides is the *order*, so there is no way for anyone to steer a
 favourable comparison by reordering.
 
-**Practice is discarded.** The 3 practice trials with answers shown are not
-saved, so learning the *task* does not contaminate learning the *numbering*.
+**Practice is kept apart.** The warm-up runs on its own map with its own scheme,
+and is recorded in its own list, so learning the *task* never enters the data on
+learning the *numbering*.
 
-**The same roads are tested in the same slot for everyone**, which removes a
-large source of noise — differences between schemes are not muddled by some
-people happening to get harder roads.
+**No trial gives away another's answer.** Within a block, nothing a participant
+is asked to find or reach has been located by an earlier trial — see *How trials
+are chosen*. Left to chance this happened in about a third of searches on the
+small maps, and most often on the schemes the paper argues for.
+
+**Trials are the same for everyone given the same scheme in the same slot.**
+Selection is seeded by network, block position and scheme, so two participants
+doing Scheme B second answer about the same roads — differences between schemes
+are not muddled by some people happening to get harder roads.
 
 ---
 
@@ -778,7 +965,7 @@ knowing which scheme is which. In `js/design.js`:
 
 ```js
 citySelection: 'fixed',
-fixedCity: 'Brooklyn/Network-1',      // whichever you settled on
+fixedCity: 'Brooklyn/Network-2',      // any map with no setup-screen warning
 schemeSelection: 'fixed',
 fixedSchemes: ['mucs', 'mucs_BGP', 'middfs_BucsGP_d5', 'bfs'],
 trialSelection: 'fixed',
@@ -872,7 +1059,9 @@ evaluate/
   js/bundle.js        the index: 17 algorithms, 6 networks   (generated)
   js/cities/*.js      one network each: geometry + 17 numberings   (generated)
   build_bundle.py     regenerates both from data/ and results/
-  tests/check_design.mjs   checks the design without a browser
+  tests/check_design.mjs   every trial rule, on every block, scheme and network
+  tests/check_review.mjs   the trial review screen, against a real DOM
+  tests/check_flow.mjs     the whole study end to end, and the file it sends
   tests/check_metrics.py   checks every measure against a hand-computed answer
   aggregate.py        result files -> final numbers
   requirements.txt    pandas, numpy, statsmodels, matplotlib

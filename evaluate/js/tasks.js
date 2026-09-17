@@ -14,7 +14,9 @@
  * after Step 2 - so clicking any road carrying the number asked for is correct.
  */
 
-import { bfsHopsFrom, bfsPath } from './design.js';
+import {
+  CONFIG, bfsHopsFrom, bfsPath, orientationOf, routeMetres, ruleParity, shortestMetres,
+} from './design.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -197,6 +199,7 @@ export class TaskMap {
       this.map.setRoadStyle(road.id, { className: '', color: null, width: null });
     }
     legend('');
+    timeWarning('');
   }
 }
 
@@ -245,7 +248,51 @@ function schemeLegend(scheme) {
   if (!parts.length) {
     parts.push('<span class="legend-item">Every road here has its own number.</span>');
   }
+  // The paper's convention, kept in view for every trial of every scheme. It
+  // is the same sentence whatever the scheme, so it helps each one only as far
+  // as that scheme actually keeps to it.
+  if (CONFIG.showParityRule) {
+    parts.unshift(`<span class="legend-item legend-rule">
+      <i class="rule-glyph" aria-hidden="true">&#8597;</i> North&ndash;south roads:
+      <b>odd</b> numbers
+      <i class="rule-glyph" aria-hidden="true">&#8596;</i> east&ndash;west roads:
+      <b>even</b> numbers</span>`);
+  }
   legend(parts.join(''));
+}
+
+/** The notice shown in the last stretch of a timed task; empty hides it. */
+export function timeWarning(text) {
+  const el = $('timeWarning');
+  if (!el) return;
+  el.textContent = text || '';
+  el.hidden = !text;
+}
+
+/**
+ * Arm the "nearly out of time" notice for a timed task.
+ *
+ * There is deliberately no running clock. A visible timer is a manipulation:
+ * it pushes people to trade accuracy for speed, and it pushes hardest on the
+ * hardest schemes, so it would change the very numbers being compared. Time is
+ * recorded silently instead. This notice exists only so that a trial with a
+ * limit never ends without warning. Returns a function that cancels it and
+ * reports whether it was shown, which is recorded with the trial.
+ */
+function armTimeWarning(limitMs) {
+  let shown = false;
+  const lead = CONFIG.timeWarningMs || 0;
+  const timer = lead > 0 && limitMs > lead
+    ? setTimeout(() => {
+      shown = true;
+      timeWarning(`${Math.round(lead / 1000)} seconds left for this one.`);
+    }, limitMs - lead)
+    : null;
+  return () => {
+    clearTimeout(timer);
+    timeWarning('');
+    return shown;
+  };
 }
 
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -310,11 +357,15 @@ function review(html, buttonText = 'Next') {
 // T1 - Fill in the blank
 // --------------------------------------------------------------------------
 
-export function runInferTrial({ taskMap, scheme, trial, index, total, practice }) {
+export function runInferTrial({ taskMap, scheme, city, trial, index, total, practice }) {
   return new Promise((resolve) => {
     const roadId = String(trial.roadId);
     const numbering = scheme.numbers;
     const actual = numbering[roadId];
+    // Which way the road runs, and so what the odd/even rule says its number
+    // should be. Recorded whether or not the rule is shown on screen.
+    const orientation = city ? orientationOf(city, roadId) : null;
+    const rule = ruleParity(orientation);
     const numbers = Object.values(numbering);
     const range = Math.max(...numbers) - Math.min(...numbers);
 
@@ -391,6 +442,12 @@ export function runInferTrial({ taskMap, scheme, trial, index, total, practice }
         errorAbs,
         errorNorm: range > 0 ? errorAbs / range : null,
         parityMatch: (guess % 2) === (actual % 2),
+        orientation,
+        ruleParity: rule,
+        // Two different findings, kept apart: whether the participant's guess
+        // followed the rule, and whether the scheme's real number does.
+        ruleFollowed: rule ? (Math.abs(guess) % 2 === 1) === (rule === 'odd') : null,
+        ruleHolds: rule ? (actual % 2 === 1) === (rule === 'odd') : null,
         numberRange: range,
         sharedBy: hidden.length,
         ms,
@@ -443,6 +500,7 @@ export function runFindTrial({ taskMap, scheme, trial, index, total, limitMs }) 
     const started = performance.now();
     let wrongClicks = 0;
     let done = false;
+    const stopWarning = armTimeWarning(limitMs);
 
     /**
      * Close the trial.
@@ -455,6 +513,7 @@ export function runFindTrial({ taskMap, scheme, trial, index, total, limitMs }) 
       if (done) return;
       done = true;
       clearTimeout(timeout);
+      const warned = stopWarning();
       const ms = Math.round(performance.now() - started);
       const interaction = taskMap.since(before);
       taskMap.onRoadClick(null);
@@ -489,6 +548,7 @@ export function runFindTrial({ taskMap, scheme, trial, index, total, limitMs }) 
         wrongClicks,
         ms,
         timedOut: !found && !gaveUp,
+        warned,
         ...interaction,
       });
     };
@@ -600,6 +660,7 @@ export function runNavigateTrial({ taskMap, scheme, city, trial, index, total, l
 
     const before = taskMap.snapshot();
     const started = performance.now();
+    const stopWarning = armTimeWarning(limitMs);
 
     /**
      * Close the journey and show what happened.
@@ -615,6 +676,7 @@ export function runNavigateTrial({ taskMap, scheme, city, trial, index, total, l
       if (done) return;
       done = true;
       clearTimeout(timeout);
+      const warned = stopWarning();
       const ms = Math.round(performance.now() - started);
       const interaction = taskMap.since(before);
       taskMap.onRoadClick(null);
@@ -625,6 +687,15 @@ export function runNavigateTrial({ taskMap, scheme, city, trial, index, total, l
       const bestSet = new Set(best.map(String));
       const deviation = arrived && trial.shortestHops > 0
         ? moves / trial.shortestHops : null;
+
+      // Steps are the primary measure: one click is one step, and the paper's
+      // own connectivity metrics count hops. Distance on the ground is recorded
+      // beside it, because a route with fewer but longer roads can win on
+      // steps and lose on metres.
+      const byDistance = shortestMetres(city, trial.from, goals);
+      const takenMetres = routeMetres(city, taken);
+      const deviationMetres = arrived && byDistance && byDistance.metres > 0
+        ? takenMetres / byDistance.metres : null;
 
       // Best route first, then the route taken on top, so roads on both show
       // as "taken" - the overlap is the part that was already optimal.
@@ -676,6 +747,11 @@ export function runNavigateTrial({ taskMap, scheme, city, trial, index, total, l
         // The route that was available, so route deviation can be checked
         // against the graph rather than taken on trust.
         bestPath: best,
+        routeMetres: Math.round(takenMetres * 10) / 10,
+        shortestMetres: byDistance ? Math.round(byDistance.metres * 10) / 10 : null,
+        routeDeviationMetres: deviationMetres,
+        shortestMetresPath: byDistance ? byDistance.path : null,
+        warned,
         ms,
         ...interaction,
       });

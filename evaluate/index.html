@@ -23,15 +23,18 @@
   <section class="screen page" id="background" hidden></section>
   <section class="screen page" id="instructions" hidden></section>
   <section class="screen page" id="questionnaire" hidden></section>
-  <section class="screen page page-wide" id="compare" hidden></section>
   <section class="screen page" id="finish" hidden></section>
 
   <!-- The task screen: a prompt bar above a map. -->
   <section class="screen task-screen" id="task" hidden>
     <div class="task-prompt" id="taskPrompt" hidden></div>
     <div class="task-feedback" id="taskFeedback" hidden></div>
+    <!-- Only in the last stretch of a timed task. There is no running clock. -->
+    <div class="time-warning" id="timeWarning" role="status" hidden></div>
     <div class="map-panel" id="mapPanel">
       <div class="map-canvas" id="map"></div>
+      <!-- North is always up. The odd/even rule depends on it. -->
+      <div class="north-arrow" aria-label="North is at the top of the map">N</div>
       <div class="map-tools">
         <button class="map-tool" id="zoomIn" title="Zoom in" aria-label="Zoom in">+</button>
         <button class="map-tool" id="zoomOut" title="Zoom out" aria-label="Zoom out">&minus;</button>

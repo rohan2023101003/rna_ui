@@ -4,7 +4,7 @@
   "description": "Road numbering interface and human-evaluation study. The study itself has no build step and no runtime dependencies; jsdom is here only so the browser-side checks in evaluate/tests can run.",
   "type": "module",
   "scripts": {
-    "test": "node evaluate/tests/check_design.mjs && node evaluate/tests/check_review.mjs && python3 evaluate/tests/check_metrics.py && python3 analysis/test_metrics.py"
+    "test": "node evaluate/tests/check_design.mjs && node evaluate/tests/check_review.mjs && node evaluate/tests/check_flow.mjs && python3 evaluate/tests/check_metrics.py && python3 analysis/test_metrics.py"
   },
   "devDependencies": {
     "jsdom": "^24.0.0"

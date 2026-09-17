@@ -19,6 +19,10 @@ export const CONFIG = {
   // 'fixed' - everyone uses FIXED_CITY (this is what gives the scheme
   //           comparison its power, so switch to it once the pilot is done)
   citySelection: 'ask',
+  // Pick a map the setup screen shows no warning for. Brooklyn/Network-1 is too
+  // small for partitioned schemes at the default trial counts - some guesses
+  // would have to reuse a number answered in another zone - and
+  // Hyderabad/Network-1 is the practice map.
   fixedCity: 'Brooklyn/Network-1',
 
   // -- which numbering schemes -------------------------------------------
@@ -86,6 +90,27 @@ export const CONFIG = {
     navigate: 1,
   },
   timeLimitMs: { find: 120000, navigate: 180000 },
+  // No running clock is ever shown: a visible timer is a manipulation, not a
+  // neutral display - it pushes people to trade accuracy for speed, and pushes
+  // hardest on the hardest schemes. Times are recorded silently. The one
+  // concession is here: the last stretch of a timed task shows a notice, so
+  // nobody is cut off without warning.
+  timeWarningMs: 30000,
+
+  // -- the odd/even rule ----------------------------------------------------
+  // The paper's convention: roads running north-south get odd numbers, roads
+  // running east-west get even ones. It is part of the numbering system - the
+  // way "odd interstates run north-south" is part of the US one, which drivers
+  // are told rather than left to discover - so participants are told it up
+  // front and it stays on screen.
+  //
+  // Telling everyone favours no scheme. All 17 were generated with the rule:
+  // 99.7-99.9% of roads honour it in the 15 modified schemes and about 86% in
+  // plain BFS and DFS. A scheme gains only by actually keeping to it, which is
+  // exactly the property being claimed for it. Switching this off turns the
+  // guessing task into discovering the rule unaided - a different question,
+  // and one the paper does not ask.
+  showParityRule: true,
   // A guess this far from the real number or closer counts as a success.
   // Expressed as a fraction of the number range, and fixed in advance so the
   // threshold cannot be chosen afterwards to flatter a result.
@@ -284,100 +309,317 @@ export function planBlocks(participantId, city, chosenKeys = null) {
 // --------------------------------------------------------------------------
 
 /**
- * Trials are seeded by network and block position, not by participant. Every
- * participant therefore answers about the same roads in the same slot, which
- * removes a large source of noise: differences between schemes are not muddled
- * by some participants happening to get harder roads.
+ * How a block's trials are chosen - and why it is not simply random.
+ *
+ * Plain random sampling was measured against the shipped data first, and it
+ * failed in ways that bias exactly the comparison the study exists to make:
+ *
+ *   - the same number was asked twice in 28-44% of blocks, so the second time
+ *     its answer had just been shown;
+ *   - on the small networks about 28% of "find road N" targets, and about 30%
+ *     of journey goals, had just been revealed by an earlier trial;
+ *   - find targets landed on multi-segment roads four times as often as their
+ *     share of the numbers, because sampling roads favours long roads.
+ *
+ * All three bite hardest on partitioned and bucketed schemes, which have the
+ * fewest distinct numbers - so those schemes would have looked better for
+ * reasons that have nothing to do with how good their numbering is.
+ *
+ * The rules, strongest first:
+ *
+ *   Never
+ *     - use the same road twice in a block, or guess the same physical road
+ *       (partition and number) twice;
+ *     - ask a guess whose answer the block later asks you to find or travel to,
+ *       because the guess's review would show where it is;
+ *     - ask you to find or travel to a number whose location an earlier trial
+ *       in the block has already shown.
+ *   Avoid - relaxed only when a small network runs out, and recorded when it is
+ *     - two guesses with the same number in different zones;
+ *     - a trial on a road that shares a junction with the trial just before it.
+ *
+ * The last rule is applied to the *order* of the trials, never to which trials
+ * are chosen. Filtering the choice for spacing was tried and measured: a number
+ * spread over many segments is more likely to touch an earlier pick, so the
+ * heaviest-bucketed schemes lost their multi-segment numbers - the easy ones to
+ * find - more often than chance allows (z = -3.6). Choosing with the hard rules
+ * alone and then arranging the order keeps the choice exactly as uniform as the
+ * rules permit. Adjacency was already at chance level; ordering removes it.
+ *
+ * Selection runs find -> travel -> guess, the reverse of the order they are
+ * shown in, because the later-shown tasks' targets are what the earlier-shown
+ * guesses must avoid revealing. Everything is deterministic from the network,
+ * block position and scheme, so a refreshed session gets identical trials.
  */
-function trialSeed(city, blockIndex, task) {
-  return hashSeed(`${city.id}|${blockIndex}|${task}`);
-}
 
-/** Roads with enough neighbours that their number could reasonably be inferred. */
-function inferableRoads(city) {
-  return city.roads
-    .filter((r) => (city.adj[String(r.i)] || []).length >= 2)
-    .sort((a, b) => b.len - a.len);
-}
+/** The most blocks a session can have; each gets its own share of the roads. */
+const POOL_COUNT = 6;
 
-export function pickInferTrials(city, blockIndex, count, scheme) {
-  const rand = makeRandom(trialSeed(city, blockIndex, 'infer'));
-  // Longer roads first: they are the ones a participant can actually reason
-  // about from the numbers around them. Roads this scheme never numbered are
-  // no use - there would be no answer to score the guess against.
-  const pool = inferableRoads(city)
-    .filter((r) => !scheme || scheme.numbers[String(r.i)] !== undefined)
-    .slice(0, Math.max(count * 3, 30));
-  return shuffled(pool, rand).slice(0, count).map((r) => ({ roadId: r.i }));
-}
+/** Trials of one task in a block may not be closer than this, in junctions. */
+const MIN_SEPARATION_HOPS = 2;
 
-export function pickFindTrials(city, blockIndex, count, scheme) {
-  const rand = makeRandom(trialSeed(city, blockIndex, 'find'));
-  const numbered = city.roads.filter((r) => scheme.numbers[String(r.i)] !== undefined);
-  return shuffled(numbered, rand).slice(0, count).map((r) => ({
-    roadId: r.i,
-    target: scheme.numbers[String(r.i)],
-  }));
-}
+/**
+ * A segment shorter than this fraction of its network's median is a stub: a
+ * sub-metre digitising artefact, or a sliver where two roads meet. It cannot be
+ * seen, let alone reasoned about, so it is never made a trial.
+ */
+const STUB_FRACTION = 0.25;
 
 /** How far apart a journey's ends must be, in junctions crossed. */
 const JOURNEY_HOPS = [4, 9];
 
-/**
- * Navigation trials: far enough apart to be a real journey, close enough that
- * the task does not become tedious.
- *
- * The destination is a *number*, not a road, because a partitioned or bucketed
- * scheme gives that number to several roads and any of them is a legitimate
- * arrival. Everything here therefore works in numbers, and the length of a
- * journey is the distance to the **nearest** road carrying the target number.
- *
- * That last point is not a detail. Choosing a destination road 6 hops away and
- * then letting the participant finish at another stretch of the same street 1
- * hop away would produce journeys far shorter than intended - and only on the
- * partitioned and bucketed schemes, which reuse numbers. Those schemes would
- * then score better on route deviation and on time for a reason that has
- * nothing to do with their numbering. So the 4-9 hop window is applied to the
- * nearest road carrying the number, which is the journey the participant
- * actually faces.
- */
-export function pickNavigateTrials(city, blockIndex, count, scheme) {
-  const rand = makeRandom(trialSeed(city, blockIndex, 'navigate'));
-  const [minHops, maxHops] = JOURNEY_HOPS;
-  const ids = city.roads.map((r) => r.i)
-    .filter((i) => (city.adj[String(i)] || []).length
-      && scheme.numbers[String(i)] !== undefined);
-  const out = [];
-  let guard = 0;
-  while (out.length < count && guard++ < 500) {
-    const from = ids[Math.floor(rand() * ids.length)];
-    const hops = bfsHops(city, from);
+const networkCache = new WeakMap();
 
-    // Collapse the reachable roads down to reachable *numbers*, keeping the
-    // nearest road for each - that is where the journey actually ends.
+/** Facts about one network the planner needs, computed once per session. */
+function networkFacts(city) {
+  if (networkCache.has(city)) return networkCache.get(city);
+  const sorted = city.roads.map((r) => r.len).sort((a, b) => a - b);
+  const median = sorted.length ? sorted[Math.floor((sorted.length - 1) / 2)] : 0;
+  const stub = new Set(city.roads
+    .filter((r) => r.len < median * STUB_FRACTION).map((r) => r.i));
+
+  // Deal every usable road into POOL_COUNT disjoint piles, in a shuffled order
+  // fixed per network. Block k draws from pile k first, so the blocks of one
+  // session test different roads for as long as the network has enough.
+  const usable = city.roads
+    .filter((r) => !stub.has(r.i) && (city.adj[String(r.i)] || []).length)
+    .map((r) => r.i);
+  const order = shuffled(usable, makeRandom(hashSeed(`${city.id}|pools`)));
+  const pools = Array.from({ length: POOL_COUNT }, () => []);
+  order.forEach((id, n) => pools[n % POOL_COUNT].push(id));
+
+  const facts = {
+    stub,
+    pools,
+    lengthOf: new Map(city.roads.map((r) => [r.i, r.len])),
+    orientationOf: new Map(city.roads.map((r) => [r.i, r.o])),
+  };
+  networkCache.set(city, facts);
+  return facts;
+}
+
+/** Block k's candidate roads: its own pile first, then the others in turn. */
+function roadOrder(city, blockIndex) {
+  const { pools } = networkFacts(city);
+  const k = ((blockIndex % POOL_COUNT) + POOL_COUNT) % POOL_COUNT;
+  const out = [];
+  for (let j = 0; j < POOL_COUNT; j++) out.push(...pools[(k + j) % POOL_COUNT]);
+  return out;
+}
+
+export function isStub(city, roadId) {
+  return networkFacts(city).stub.has(Number(roadId));
+}
+
+/** 'NS', 'EW', or null - the direction the odd/even rule is judged on. */
+export function orientationOf(city, roadId) {
+  return networkFacts(city).orientationOf.get(Number(roadId)) || null;
+}
+
+/** What the paper's rule says a road's number should be: 'odd', 'even' or null. */
+export function ruleParity(orientation) {
+  if (orientation === 'NS') return 'odd';
+  if (orientation === 'EW') return 'even';
+  return null;
+}
+
+/**
+ * The spacing rule for one task: each accepted road makes itself and every road
+ * closer than MIN_SEPARATION_HOPS off-limits to the next trial of that task.
+ */
+function spacingRule(city) {
+  const near = new Set();
+  return {
+    ok: (id) => !near.has(Number(id)),
+    add(id) {
+      // A local visited set, so a road already near an earlier trial does not
+      // stop the search from marking what lies beyond it.
+      const seen = new Set([Number(id)]);
+      let frontier = [Number(id)];
+      for (let d = 1; d < MIN_SEPARATION_HOPS; d++) {
+        const next = [];
+        for (const n of frontier) {
+          for (const m of city.adj[String(n)] || []) {
+            if (!seen.has(m)) { seen.add(m); next.push(m); }
+          }
+        }
+        frontier = next;
+      }
+      for (const road of seen) near.add(road);
+    },
+  };
+}
+
+/**
+ * Every trial of every task for one block.
+ *
+ * Returns `{ infer, find, navigate }`. Each trial carries `relaxed`: the names
+ * of any soft rules that had to be dropped to fill it, empty when none were.
+ * If a network cannot supply `counts` without breaking a hard rule, the block
+ * is shorter rather than contaminated - the returned lengths are the truth.
+ */
+/** Roads that are the same as, or share a junction with, any of `roads`. */
+function neighbourhood(city, roads) {
+  const rule = spacingRule(city);
+  for (const id of roads) rule.add(id);
+  return rule;
+}
+
+/**
+ * Arrange one task's trials so none sits next to the one shown before it.
+ *
+ * The trials themselves are already chosen; only their order changes. The
+ * order starts from a seeded shuffle - never the selection order, which would
+ * push trials chosen under a relaxed rule to the end of the block, and the end
+ * of a block is exactly what learning gain measures. A greedy pass then takes,
+ * at each step, the first remaining trial clear of the last one. A few seeded
+ * reshuffles are tried and the order needing the fewest exceptions is kept; any
+ * trial that still follows a neighbour is marked `spacing`, never hidden.
+ */
+function spaceOut(city, items, roadsOf, rand) {
+  if (items.length < 2) return items.map((t) => ({ ...t, relaxed: [...(t.relaxed || [])] }));
+  let best = null;
+  for (let attempt = 0; attempt < 25 && (!best || best.exceptions); attempt++) {
+    const order = shuffled(items, rand);
+    const zones = order.map((item) => neighbourhood(city, roadsOf(item)));
+    const clearOf = (i, j) => roadsOf(order[j]).every((id) => zones[i].ok(id));
+    const remaining = order.map((_, i) => i);
+    const out = [];
+    let exceptions = 0;
+    let last = -1;
+    while (remaining.length) {
+      let at = remaining.findIndex((i) => last < 0 || clearOf(last, i));
+      const forced = at < 0;
+      if (forced) { at = 0; exceptions += 1; }
+      const i = remaining.splice(at, 1)[0];
+      const relaxed = (order[i].relaxed || []).filter((r) => r !== 'spacing');
+      if (forced) relaxed.push('spacing');
+      out.push({ ...order[i], relaxed });
+      last = i;
+    }
+    if (!best || exceptions < best.exceptions) best = { out, exceptions };
+  }
+  return best.out;
+}
+
+/**
+ * Every trial of every task for one block.
+ *
+ * Returns `{ infer, find, navigate }` in the order they are shown. Each trial
+ * carries `relaxed`: the names of any soft rules it needed, empty when none. If
+ * a network cannot supply `counts` without breaking a hard rule, the block is
+ * shorter rather than contaminated - the returned lengths are the truth.
+ */
+export function planTrials(city, blockIndex, scheme, counts) {
+  const { stub } = networkFacts(city);
+  const want = { infer: counts.infer || 0, find: counts.find || 0,
+                 navigate: counts.navigate || 0 };
+  const numberOf = (id) => scheme.numbers[String(id)];
+  const zoneOf = (id) => scheme.partition[String(id)] ?? '';
+  const seeded = (task) => makeRandom(
+    hashSeed(`${city.id}|${blockIndex}|${scheme.key}|${task}`));
+
+  const usedRoads = new Set();     // no road twice in a block, in any task
+  const targets = new Set();       // numbers a find or travel trial asks for
+
+  // --- find: uniform over numbers, not roads ------------------------------
+  const numbers = [...new Set(city.roads
+    .filter((r) => !stub.has(r.i) && numberOf(r.i) !== undefined)
+    .map((r) => numberOf(r.i)))].sort((a, b) => a - b);
+  const find = [];
+  for (const number of shuffled(numbers, seeded('find'))) {
+    if (find.length >= want.find) break;
+    const roads = scheme.roadsWithNumber(number).map(Number);
+    find.push({ roadId: roads.find((id) => !stub.has(id)) ?? roads[0],
+                target: number, relaxed: [] });
+    targets.add(number);
+    for (const id of roads) usedRoads.add(id);
+  }
+
+  // --- travel: goal is the nearest road carrying a number, 4-9 hops away ----
+  // Journeys can be reordered afterwards, so the leak rule is kept symmetric:
+  // no journey's goal is any journey's starting number, whichever comes first.
+  const [minHops, maxHops] = JOURNEY_HOPS;
+  const starts = roadOrder(city, blockIndex).filter((id) => numberOf(id) !== undefined);
+  const pickGoal = seeded('navigate');
+  const startNumbers = new Set();
+  const journeyGoals = new Set();
+  const journeys = [];
+  for (const from of starts) {
+    if (journeys.length >= want.navigate) break;
+    if (usedRoads.has(from) || journeyGoals.has(numberOf(from))) continue;
+
+    // Collapse reachable roads to reachable numbers, keeping the nearest road
+    // of each: arrival is by number, so that is where a journey really ends.
+    const hops = bfsHops(city, from);
     const nearest = new Map();
     for (const [id, distance] of Object.entries(hops)) {
-      const number = scheme.numbers[id];
+      const number = numberOf(id);
       if (number === undefined) continue;
       const best = nearest.get(number);
       if (best === undefined || distance < best.distance) {
         nearest.set(number, { distance, roadId: Number(id) });
       }
     }
-
-    const candidates = [...nearest.entries()].filter(([number, { distance }]) =>
+    const options = [...nearest.entries()].filter(([number, { distance, roadId }]) =>
       distance >= minHops && distance <= maxHops
-      // A start already carrying the target number would be over before it began.
-      && number !== scheme.numbers[String(from)]);
-    if (!candidates.length) continue;
+      && !stub.has(roadId) && !usedRoads.has(roadId)
+      && number !== numberOf(from)
+      && !targets.has(number) && !startNumbers.has(number));
+    if (!options.length) continue;
 
     const [target, { distance, roadId }] =
-      candidates[Math.floor(rand() * candidates.length)];
-    if (out.some((t) => t.from === from && t.target === target)) continue;
-    out.push({ from, to: roadId, target, shortestHops: distance });
+      options[Math.floor(pickGoal() * options.length)];
+    journeys.push({ from, to: roadId, target, shortestHops: distance, relaxed: [] });
+    targets.add(target);
+    journeyGoals.add(target);
+    startNumbers.add(numberOf(from));
+    usedRoads.add(from);
+    usedRoads.add(roadId);
   }
-  return out;
+
+  // --- guess: chosen last, so it avoids every target above -------------------
+  const guessable = roadOrder(city, blockIndex).filter((id) =>
+    numberOf(id) !== undefined && (city.adj[String(id)] || []).length >= 2);
+  const buckets = new Set();
+  const guessedNumbers = new Set();
+  const infer = [];
+  for (const uniqueNumber of [true, false]) {
+    for (const id of guessable) {
+      if (infer.length >= want.infer) break;
+      const number = numberOf(id);
+      const bucket = `${zoneOf(id)}|${number}`;
+      if (usedRoads.has(id) || buckets.has(bucket) || targets.has(number)) continue;
+      if (uniqueNumber && guessedNumbers.has(number)) continue;
+      infer.push({ roadId: id, relaxed: [] });
+      buckets.add(bucket);
+      guessedNumbers.add(number);
+      usedRoads.add(id);
+    }
+  }
+
+  const plan = {
+    find: spaceOut(city, find, (t) => scheme.roadsWithNumber(t.target), seeded('order-find')),
+    navigate: spaceOut(city, journeys, (t) => [t.from], seeded('order-navigate')),
+    infer: spaceOut(city, infer, (t) => [t.roadId], seeded('order-infer')),
+  };
+
+  // A number shared with an earlier guess (another zone's road) is flagged on
+  // whichever of the pair is *shown* second - that is the one whose answer the
+  // participant has glimpsed - so the flag follows the final order.
+  const seen = new Set();
+  for (const trial of plan.infer) {
+    const number = numberOf(trial.roadId);
+    trial.relaxed = trial.relaxed.filter((r) => r !== 'number-reused');
+    if (seen.has(number)) trial.relaxed.push('number-reused');
+    seen.add(number);
+  }
+  return { infer: plan.infer, find: plan.find, navigate: plan.navigate };
 }
+
+// --------------------------------------------------------------------------
+// Routes
+// --------------------------------------------------------------------------
 
 /**
  * The shortest route from one road to the nearest of a set of goal roads.
@@ -444,16 +686,97 @@ export function bfsHopsFrom(city, starts) {
   return seen;
 }
 
-/** Every pairing of this participant's schemes, for the preference questions. */
-export function preferencePairs(participantId, schemes) {
-  const rand = makeRandom(hashSeed(`pref|${participantId}`));
-  const pairs = [];
-  for (let i = 0; i < schemes.length; i++) {
-    for (let j = i + 1; j < schemes.length; j++) {
-      // Randomise which side each scheme appears on, so a habit of picking the
-      // left-hand option does not favour one scheme.
-      pairs.push(rand() < 0.5 ? { left: i, right: j } : { left: j, right: i });
+/**
+ * Metres covered stepping from one road onto the next.
+ *
+ * Counted midpoint to midpoint - half of each road - because it is symmetric
+ * and does not depend on which end of a road someone is imagined to enter.
+ * Summed along a route it gives half the start road, every road in between in
+ * full, and half the road arrived on.
+ */
+export function stepMetres(city, a, b) {
+  const { lengthOf } = networkFacts(city);
+  return ((lengthOf.get(Number(a)) || 0) + (lengthOf.get(Number(b)) || 0)) / 2;
+}
+
+/** Length of a route, in metres, by `stepMetres`. */
+export function routeMetres(city, path) {
+  let total = 0;
+  for (let k = 1; k < path.length; k++) total += stepMetres(city, path[k - 1], path[k]);
+  return total;
+}
+
+/** Minimal binary heap for Dijkstra; the networks are small, but correctness is not. */
+class MinHeap {
+  constructor() { this.items = []; }
+  get size() { return this.items.length; }
+  push(key, value) {
+    const a = this.items;
+    a.push([key, value]);
+    let i = a.length - 1;
+    while (i > 0) {
+      const parent = (i - 1) >> 1;
+      if (a[parent][0] <= a[i][0]) break;
+      [a[parent], a[i]] = [a[i], a[parent]];
+      i = parent;
     }
   }
-  return shuffled(pairs, rand);
+  pop() {
+    const a = this.items;
+    const top = a[0];
+    const last = a.pop();
+    if (a.length) {
+      a[0] = last;
+      let i = 0;
+      for (;;) {
+        const l = 2 * i + 1;
+        const r = l + 1;
+        let m = i;
+        if (l < a.length && a[l][0] < a[m][0]) m = l;
+        if (r < a.length && a[r][0] < a[m][0]) m = r;
+        if (m === i) break;
+        [a[m], a[i]] = [a[i], a[m]];
+        i = m;
+      }
+    }
+    return top;
+  }
+}
+
+/**
+ * The shortest route by distance to the nearest goal road (Dijkstra).
+ *
+ * The study's primary route measure is in steps - one click is one step, and
+ * the paper's own connectivity metrics count hops. Distance is recorded next
+ * to it as the real-world check: a route with fewer but longer roads can be
+ * shorter in steps and longer on the ground. Returns `{ metres, path }` or
+ * `null` if no goal is reachable.
+ */
+export function shortestMetres(city, from, goals) {
+  const target = new Set([...goals].map(Number));
+  const start = Number(from);
+  const dist = new Map([[start, 0]]);
+  const prev = new Map([[start, null]]);
+  const done = new Set();
+  const heap = new MinHeap();
+  heap.push(0, start);
+  while (heap.size) {
+    const [d, node] = heap.pop();
+    if (done.has(node)) continue;
+    done.add(node);
+    if (target.has(node)) {
+      const path = [];
+      for (let step = node; step != null; step = prev.get(step)) path.push(step);
+      return { metres: d, path: path.reverse() };
+    }
+    for (const next of city.adj[String(node)] || []) {
+      const candidate = d + stepMetres(city, node, next);
+      if (candidate < (dist.get(next) ?? Infinity)) {
+        dist.set(next, candidate);
+        prev.set(next, node);
+        heap.push(candidate, next);
+      }
+    }
+  }
+  return null;
 }

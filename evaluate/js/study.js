@@ -9,8 +9,8 @@
  * because that is far easier to read and to change:
  *
  *   welcome -> participant number -> background -> choose a map -> practice
- *     -> [ for each of 4 blocks:  infer, find, navigate, NASA-TLX ]
- *     -> preference -> context -> send
+ *     -> [ for each block:  infer, find, navigate, then workload + rating ]
+ *     -> send
  *
  * The four blocks are four of the seventeen numbering schemes, drawn and
  * ordered by design.js from the participant number alone. They are never named
@@ -21,13 +21,12 @@
 import { MapView } from '../../web/js/mapview.js';
 import { BUNDLE } from './bundle.js';
 import {
-  CONFIG, pickFindTrials, pickInferTrials, pickNavigateTrials,
-  pickSchemes, planBlocks, practiceSetup, preferencePairs,
+  CONFIG, pickSchemes, planBlocks, planTrials, practiceSetup,
 } from './design.js';
 import { buildScheme, loadCityData } from './scheme.js';
 import {
   TaskMap, feedback, legend, prompt, runFindTrial,
-  runInferTrial, runNavigateTrial,
+  runInferTrial, runNavigateTrial, timeWarning,
 } from './tasks.js';
 
 const $ = (id) => document.getElementById(id);
@@ -52,6 +51,7 @@ function configFingerprint() {
     CONFIG.schemeSelection, CONFIG.fixedSchemes, CONFIG.schemesPerParticipant,
     CONFIG.trialSelection, CONFIG.trials, CONFIG.practice,
     CONFIG.participants, CONFIG.inferSuccessTolerance,
+    CONFIG.showParityRule, CONFIG.timeLimitMs, CONFIG.timeWarningMs,
   ]);
 }
 
@@ -81,8 +81,12 @@ const state = {
   // away now would make that unrecoverable later.
   practiceTrials: [],
   tlx: [],
-  preference: [],
-  context: [],
+  // One per block: "could a numbering like this be used in a real city?",
+  // 1-7, and an optional comment. Per scheme, so it can be attributed to one.
+  ratings: [],
+  // What each block actually planned, per task. A small network can supply
+  // fewer trials than configured rather than repeat an answer; this records it.
+  plan: [],
   // What the code was configured to do when this session started. A session
   // saved under different settings cannot be resumed into this one.
   config: null,
@@ -118,6 +122,7 @@ function show(id) {
     const note = document.getElementById('taskFeedback');
     if (note) { note.textContent = ''; note.hidden = true; }
     legend('');
+    timeWarning('');
   }
   window.scrollTo(0, 0);
 }
@@ -268,20 +273,15 @@ async function run() {
     .map((b) => ({ label: b.algorithm.label, algorithm: b.algorithm.key }));
   save();
 
-  const totalSteps = blocks.length * 5 + 2;
+  const totalSteps = blocks.length;
   let step = 0;
 
   for (const block of blocks) {
     await runBlock(block, blocks.length);
-    step += 5;
-    progress(step, totalSteps);
+    progress(++step, totalSteps);
   }
 
   setScheme(null);
-  await preferenceScreen();
-  progress(++step, totalSteps);
-  await contextScreen(blocks);
-  progress(++step, totalSteps);
 
   state.finishedAt = new Date().toISOString();
   save();
@@ -354,7 +354,7 @@ async function welcome() {
       <li>Guess numbers that have been hidden</li>
       <li>Find a road with a given number</li>
       <li>Travel from one road to another</li>
-      <li>Say how demanding each part felt</li>
+      <li>Say how each numbering felt, and whether it could work in a real city</li>
     </ul>
     <h2>Please know</h2>
     <ul class="plain-list">
@@ -564,6 +564,7 @@ function setupScreen() {
 
       ${askSchemes || askTrials ? `
           <p class="setup-estimate" id="setupEstimate"></p>
+          <p class="warn setup-capacity" id="setupCapacity" hidden></p>
           <ul class="setup-warnings" id="setupWarnings"></ul>
         </div>` : ''}
 
@@ -589,27 +590,24 @@ function setupScreen() {
       if (!estimate) return;
       const n = askSchemes ? checked().length : preset.size;
       const t = askTrials ? typed() : counts;
-      const pairs = (n * (n - 1)) / 2;
       const practice = practiceSetup().counts;
-      // 180s of fixed overhead: consent, participant number, background, the
-      // between-block screens and the closing questions.
+      // 180s of fixed overhead: consent, participant number, background and
+      // the between-block screens. Each block ends with ~75s of questions.
       const seconds = 180
         + practice.infer * 20 + practice.find * 45 + practice.navigate * 70
-        + n * ((t.infer || 0) * 15 + (t.find || 0) * 35 + (t.navigate || 0) * 60 + 65)
-        + pairs * 25;
+        + n * ((t.infer || 0) * 15 + (t.find || 0) * 35 + (t.navigate || 0) * 60 + 75);
       estimate.textContent = `${n} scheme${n === 1 ? '' : 's'} x `
         + `${(t.infer || 0) + (t.find || 0) + (t.navigate || 0)} trials = `
         + `${n * ((t.infer || 0) + (t.find || 0) + (t.navigate || 0))} scored trials, `
-        + `${pairs} side-by-side comparison${pairs === 1 ? '' : 's'}, `
         + `roughly ${Math.round(seconds / 60)} minutes per participant.`;
 
       // What each number costs you in the analysis. Said here rather than
       // discovered later in aggregate.py.
       const notes = [];
       if (n < 2) {
-        notes.push('With one scheme there is nothing to compare it against: '
-          + 'the side-by-side round is skipped and the models have no contrast '
-          + 'to estimate. Useful for checking a scheme end to end, not for a result.');
+        notes.push('With one scheme there is nothing to compare it against, so '
+          + 'the models have no contrast to estimate. Useful for checking a scheme '
+          + 'end to end, not for a result.');
       }
       if ((t.infer || 0) < CONFIG.learnMin) {
         notes.push(`Learning gain compares the first third of the guesses with `
@@ -627,8 +625,59 @@ function setupScreen() {
       const list = el.querySelector('#setupWarnings');
       list.innerHTML = notes.map((nt) => `<li>${nt}</li>`).join('');
       list.hidden = !notes.length;
+      checkCapacity(n ? (askSchemes ? checked() : [...preset]) : [], t);
     };
 
+    /**
+     * Can the chosen map supply these trial counts for these schemes?
+     *
+     * Trials never repeat an answer within a block, so a partitioned scheme -
+     * whose numbering restarts in every zone and so has few distinct numbers -
+     * can run out on a small map. This asks the real planner, so the warning
+     * is exactly what would happen, not an estimate.
+     */
+    let capacityCheck = 0;
+    const checkCapacity = async (keys, t) => {
+      const note = el.querySelector('#setupCapacity');
+      const cityId = el.querySelector('input[name="city"]:checked')?.value
+        || state.city || CONFIG.fixedCity;
+      const token = ++capacityCheck;
+      if (!note || !keys.length || !cityId) { if (note) note.hidden = true; return; }
+      const city = await loadCityData(cityId);
+      if (token !== capacityCheck) return;       // superseded by a later change
+      const short = [];
+      const reused = [];
+      for (const key of keys) {
+        const planned = planTrials(city, 0, buildScheme(city, key), t);
+        for (const task of ['infer', 'find', 'navigate']) {
+          if (planned[task].length < (t[task] || 0)) {
+            short.push(`${key}: ${planned[task].length} of ${t[task]} ${task}`);
+          }
+        }
+        // Short of running out, a partitioned scheme on a small map may still
+        // have to reuse a number answered in another zone. Flagged in the data,
+        // but a partial give-away, so it is worth knowing before choosing.
+        const n = planned.infer.filter((trial) => trial.relaxed.includes('number-reused')).length;
+        if (n) reused.push(`${key}: ${n} of ${planned.infer.length}`);
+      }
+      const messages = [];
+      if (short.length) {
+        messages.push(`${city.id} is too small for these counts without repeating `
+          + `an answer within a block, so those blocks would be shorter - `
+          + `${short.join('; ')}. Pick a larger map or fewer trials.`);
+      }
+      if (reused.length) {
+        messages.push(`On ${city.id} some guesses would reuse a number already `
+          + `answered in another zone (flagged in the data) - about ${reused.join('; ')} `
+          + 'guesses per block. A larger map avoids it.');
+      }
+      note.textContent = messages.join(' ');
+      note.hidden = !messages.length;
+    };
+
+    for (const input of el.querySelectorAll('input[name="city"]')) {
+      input.addEventListener('change', update);
+    }
     for (const input of el.querySelectorAll('input[name="scheme"], input[name="trial"]')) {
       input.addEventListener('change', update);
       input.addEventListener('input', update);
@@ -714,9 +763,22 @@ async function practice() {
 
   await screen('instructions', `
     <h1>First, a quick practice</h1>
+    ${CONFIG.showParityRule ? `
+      <p>Every numbering in this study follows one rule, and it is worth
+        remembering:</p>
+      <div class="rule-box">
+        <i class="rule-glyph" aria-hidden="true">&#8597;</i>
+        <span>Roads running roughly <b>north&ndash;south</b> have <b>odd</b>
+          numbers &mdash; 1, 3, 5, 7&hellip;</span>
+        <i class="rule-glyph" aria-hidden="true">&#8596;</i>
+        <span>Roads running roughly <b>east&ndash;west</b> have <b>even</b>
+          numbers &mdash; 2, 4, 6, 8&hellip;</span>
+      </div>
+      <p>North is always at the top of the map, and the rule stays on screen
+        under the map the whole time.</p>` : ''}
     <p>You will try each of the three activities on a small practice map.
       <b>We will tell you the answer every time</b>, so this is where to get the
-      hang of it &mdash; none of it is recorded.</p>
+      hang of it.</p>
     <p class="tip">You can drag the map to move it and scroll to zoom. There are
       buttons for both in the top right.</p>
     <div class="btn-row"><button class="btn btn-big" id="next">Start practice</button></div>`);
@@ -724,19 +786,21 @@ async function practice() {
   // Practice records exactly what a scored trial records, into its own list.
   const common = { phase: 'practice', algorithm: algorithm.key,
                    scheme: 'Practice', city: city.id, blockIndex: -1 };
-  const keep = (key, index, result) => {
-    state.practiceTrials.push({ key, trialIndex: index, ...common, ...result });
+  const keep = (key, index, trial, result) => {
+    state.practiceTrials.push({ key, trialIndex: index, ...common,
+                                relaxed: trial.relaxed, ...result });
     save();
   };
+  const planned = planTrials(city, 99, scheme, counts);
 
   // --- guess a hidden number ---
   if (counts.infer > 0) {
     show('task');
     loadCity(city);
-    const trials = pickInferTrials(city, 99, counts.infer, scheme);
+    const trials = planned.infer;
     for (let i = 0; i < trials.length; i++) {
-      keep(`practice:infer:${i}`, i, await runInferTrial({
-        taskMap: ensureMap(), scheme, trial: trials[i],
+      keep(`practice:infer:${i}`, i, trials[i], await runInferTrial({
+        taskMap: ensureMap(), scheme, city, trial: trials[i],
         index: i, total: trials.length, practice: true,
       }));
     }
@@ -747,12 +811,12 @@ async function practice() {
     await interlude('Practice: find a road',
       'Now you will be given a road number and have to find that road on the '
       + 'map and click it. If several stretches share that number, clicking any '
-      + 'one of them counts.');
+      + `one of them counts. You have up to ${limitText('find')} for each road.`);
     show('task');
     loadCity(city);
-    const trials = pickFindTrials(city, 99, counts.find, scheme);
+    const trials = planned.find;
     for (let i = 0; i < trials.length; i++) {
-      keep(`practice:find:${i}`, i, await runFindTrial({
+      keep(`practice:find:${i}`, i, trials[i], await runFindTrial({
         taskMap: ensureMap(), scheme, trial: trials[i],
         index: i, total: trials.length, limitMs: CONFIG.timeLimitMs.find,
       }));
@@ -764,12 +828,13 @@ async function practice() {
     await interlude('Practice: travel between roads',
       'Last one. You start on a road and have to reach a road with a given '
       + 'number, one step at a time. The roads you can step onto from where you '
-      + 'are will be outlined in blue.');
+      + `are will be outlined in blue. You have up to ${limitText('navigate')} `
+      + 'for each journey.');
     show('task');
     loadCity(city);
-    const trials = pickNavigateTrials(city, 99, counts.navigate, scheme);
+    const trials = planned.navigate;
     for (let i = 0; i < trials.length; i++) {
-      keep(`practice:navigate:${i}`, i, await runNavigateTrial({
+      keep(`practice:navigate:${i}`, i, trials[i], await runNavigateTrial({
         taskMap: ensureMap(), scheme, city, trial: trials[i],
         index: i, total: trials.length, limitMs: CONFIG.timeLimitMs.navigate,
       }));
@@ -830,26 +895,38 @@ async function runBlock(block, blockCount) {
   const common = { phase: 'scored', blockIndex, algorithm: algorithm.key,
                    scheme: algorithm.label, city: city.id };
 
-  // --- infer ---
+  // Every trial in the block is planned together, so that no trial can give
+  // away the answer to a later one. See planTrials in design.js.
   const counts = trialCounts();
-  const inferTrials = pickInferTrials(city, blockIndex, counts.infer, scheme);
+  const planned = planTrials(city, blockIndex, scheme, counts);
+  if (!state.plan.some((p) => p.blockIndex === blockIndex)) {
+    state.plan.push({
+      blockIndex, algorithm: algorithm.key,
+      infer: planned.infer.length, find: planned.find.length,
+      navigate: planned.navigate.length,
+    });
+    save();
+  }
+
+  // --- infer ---
+  const inferTrials = planned.infer;
   for (let i = 0; i < inferTrials.length; i++) {
     const key = `${tag}:infer:${i}`;
     if (alreadyDone(key)) continue;
     const result = await runInferTrial({
-      taskMap: ensureMap(), scheme, trial: inferTrials[i],
+      taskMap: ensureMap(), scheme, city, trial: inferTrials[i],
       index: i, total: inferTrials.length, practice: false,
     });
-    record({ key, trialIndex: i, ...common, ...result });
+    record({ key, trialIndex: i, ...common, relaxed: inferTrials[i].relaxed, ...result });
   }
 
   // --- find ---
   await interlude('Now find some roads',
     'You will be given a road number. Find that road on the map and click it. '
     + 'If several stretches of road share that number, clicking any one of them '
-    + 'is correct.');
+    + `is correct. You have up to ${limitText('find')} for each road.`);
   show('task');
-  const findTrials = pickFindTrials(city, blockIndex, counts.find, scheme);
+  const findTrials = planned.find;
   for (let i = 0; i < findTrials.length; i++) {
     const key = `${tag}:find:${i}`;
     if (alreadyDone(key)) continue;
@@ -857,16 +934,17 @@ async function runBlock(block, blockCount) {
       taskMap: ensureMap(), scheme, trial: findTrials[i],
       index: i, total: findTrials.length, limitMs: CONFIG.timeLimitMs.find,
     });
-    record({ key, trialIndex: i, ...common, ...result });
+    record({ key, trialIndex: i, ...common, relaxed: findTrials[i].relaxed, ...result });
   }
 
   // --- navigate ---
   await interlude('Now travel between roads',
     'You start on one road and must reach a road with a given number. Click '
     + 'roads that touch the one you are on, one step at a time, as if you were '
-    + 'driving. Reaching any road with that number finishes the trip.');
+    + 'driving. Reaching any road with that number finishes the trip. You have '
+    + `up to ${limitText('navigate')} for each journey.`);
   show('task');
-  const navTrials = pickNavigateTrials(city, blockIndex, counts.navigate, scheme);
+  const navTrials = planned.navigate;
   for (let i = 0; i < navTrials.length; i++) {
     const key = `${tag}:navigate:${i}`;
     if (alreadyDone(key)) continue;
@@ -874,7 +952,7 @@ async function runBlock(block, blockCount) {
       taskMap: ensureMap(), scheme, city, trial: navTrials[i],
       index: i, total: navTrials.length, limitMs: CONFIG.timeLimitMs.navigate,
     });
-    record({ key, trialIndex: i, ...common, ...result });
+    record({ key, trialIndex: i, ...common, relaxed: navTrials[i].relaxed, ...result });
   }
 
   ensureMap().clear();
@@ -887,6 +965,14 @@ async function runBlock(block, blockCount) {
   }
 }
 
+/** "2 minutes", "90 seconds" - how long a timed task allows, for the instructions. */
+function limitText(task) {
+  const seconds = Math.round((CONFIG.timeLimitMs[task] || 0) / 1000);
+  return seconds % 60 === 0
+    ? `${seconds / 60} minute${seconds === 60 ? '' : 's'}`
+    : `${seconds} seconds`;
+}
+
 async function interlude(title, body) {
   await screen('instructions', `
     <h1>${title}</h1><p>${body}</p>
@@ -895,182 +981,125 @@ async function interlude(title, body) {
 
 // -- questionnaires --------------------------------------------------------
 
+/**
+ * The six NASA-TLX dimensions, described in terms of what this study asks.
+ *
+ * Contextualising the descriptions is normal practice and keeps them
+ * answerable - "how much physical effort?" is meaningless until it says
+ * clicking and dragging. What each dimension *measures* is unchanged from
+ * Hart & Staveland's definitions, which is what keeps this Raw NASA-TLX and
+ * not a questionnaire of our own: mental demand is thinking, searching and
+ * deciding; frustration is irritation and discouragement, deliberately not
+ * confusion, which belongs to mental demand and would otherwise blur the two.
+ *
+ * Nothing here names the numbering scheme. The heading above the sliders does
+ * that once, for all six, rather than leading one item in particular.
+ */
 const TLX_ITEMS = [
-  ['mental', 'Mental demand', 'How much thinking, deciding or searching did it take?', 'Very low', 'Very high'],
-  ['physical', 'Physical demand', 'How much physical effort did it take?', 'Very low', 'Very high'],
-  ['temporal', 'Time pressure', 'How rushed did you feel?', 'Very low', 'Very high'],
-  ['performance', 'Your performance', 'How well do you think you did?', 'Very poor', 'Very well'],
-  ['effort', 'Effort', 'How hard did you have to work?', 'Very low', 'Very high'],
-  ['frustration', 'Frustration', 'How annoyed or stressed did you feel?', 'Very low', 'Very high'],
+  ['mental', 'Mental demand',
+    'How much thinking, searching and deciding did it take to guess a number, '
+    + 'find a road and work out a route?', 'Very low', 'Very high'],
+  ['physical', 'Physical demand',
+    'How much physical work was it - clicking, dragging, zooming the map?',
+    'Very low', 'Very high'],
+  ['temporal', 'Time pressure',
+    'How hurried or rushed did the pace feel?', 'Very low', 'Very high'],
+  ['performance', 'Your performance',
+    'How successful were you at guessing the numbers, finding the roads and '
+    + 'reaching the destinations?', 'Very poor', 'Very well'],
+  ['effort', 'Effort',
+    'How hard did you have to work, mentally and physically, to make sense of '
+    + 'this numbering and get the tasks done?', 'Very low', 'Very high'],
+  ['frustration', 'Frustration',
+    'How irritated, discouraged or stressed did you feel?', 'Very low', 'Very high'],
 ];
 
-async function tlxScreen(block) {
-  const sliders = TLX_ITEMS.map(([key, label, help, low, high]) => `
-    <div class="tlx-item">
-      <div class="tlx-head"><b>${label}</b><span>${help}</span></div>
-      <input type="range" id="tlx-${key}" min="0" max="100" step="5" value="50">
-      <div class="tlx-ends"><span>${low}</span><span>${high}</span></div>
-    </div>`).join('');
-
-  const el = await screen('questionnaire', `
-    <h1>How did ${block.algorithm.label} feel?</h1>
-    <p>Move each slider to wherever feels right for the part you just finished.
-      There are no wrong answers.</p>
-    ${sliders}
-    <div class="btn-row"><button class="btn btn-big" id="next">Continue</button></div>`);
-
-  const answers = Object.fromEntries(
-    TLX_ITEMS.map(([key]) => [key, Number(el.querySelector(`#tlx-${key}`).value)]));
-  // "Your performance" runs the other way - higher is better - so it is
-  // flipped before averaging, as the standard NASA-TLX scoring requires.
-  const raw = (answers.mental + answers.physical + answers.temporal
-    + (100 - answers.performance) + answers.effort + answers.frustration) / 6;
-
-  state.tlx.push({
-    blockIndex: block.blockIndex,
-    algorithm: block.algorithm.key,
-    scheme: block.algorithm.label,
-    city: block.city.id,
-    ...answers,
-    rawTlx: Math.round(raw * 10) / 10,
-  });
-  save();
-}
-
-async function preferenceScreen() {
-  if (state.preference.length) return;
-  const schemes = pickSchemes(state.participantId, state.schemeKeys);
-  // With a single scheme there is no pair to compare, so the round is skipped
-  // rather than shown empty.
-  if (schemes.length < 2) return;
-  const pairs = preferencePairs(state.participantId, schemes);
-  const city = await loadCityData(state.city);
-
-  await screen('instructions', `
-    <h1>Almost done</h1>
-    <p>Now we will show you two numbered maps side by side &mdash; the same
-      ${schemes.length} numbering systems you just worked with. Just tell us
-      which one makes more sense to you. There are ${pairs.length} pairs.</p>
-    <div class="btn-row"><button class="btn btn-big" id="next">Continue</button></div>`);
-
-  for (let i = 0; i < pairs.length; i++) {
-    await onePreference(pairs[i], i, pairs.length, city, schemes);
-  }
-}
-
-function onePreference(pair, index, total, city, schemes) {
+/**
+ * The questions at the end of each block, about the scheme just used.
+ *
+ * Workload (NASA Raw TLX), then one rating: "I could imagine a numbering like
+ * this being used in a real city." That rating used to be asked once, after
+ * every block - which, like a usability score, gave one number for four
+ * different schemes and could not be attributed to any of them. Asked here it
+ * belongs to exactly one scheme, and becomes a comparison.
+ */
+function tlxScreen(block) {
   return new Promise((resolve) => {
-    const el = $('compare');
+    const sliders = TLX_ITEMS.map(([key, label, help, low, high]) => `
+      <div class="tlx-item">
+        <div class="tlx-head"><b>${label}</b><span>${help}</span></div>
+        <input type="range" id="tlx-${key}" min="0" max="100" step="5" value="50">
+        <div class="tlx-ends"><span>${low}</span><span>${high}</span></div>
+      </div>`).join('');
+    const scale = [1, 2, 3, 4, 5, 6, 7].map((v) => `
+      <label><input type="radio" name="couldBeReal" value="${v}"><span>${v}</span></label>`).join('');
+
+    const el = $('questionnaire');
     el.innerHTML = `
-      <h1>Which numbering makes more sense?</h1>
-      <p class="sub">Pair ${index + 1} of ${total}. Both maps show the same city.</p>
-      <div class="compare-grid">
-        <div class="compare-side">
-          <div class="mini-map" id="miniLeft"></div>
-          <button class="btn btn-big" data-side="left">This one</button>
-        </div>
-        <div class="compare-side">
-          <div class="mini-map" id="miniRight"></div>
-          <button class="btn btn-big" data-side="right">This one</button>
-        </div>
+      <h1>How did ${block.algorithm.label} feel?</h1>
+      <p>Move each slider to wherever feels right for the part you just
+        finished. Think about <b>the numbering you were just using</b> &mdash;
+        not the website itself. There are no wrong answers.</p>
+      ${sliders}
+      <div class="rating-item">
+        <div class="tlx-head"><b>Could it be real?</b>
+          <span>"I could imagine a numbering like this being used in a real
+            city."</span></div>
+        <div class="rating-scale" role="radiogroup" aria-label="1 strongly disagree to 7 strongly agree">${scale}</div>
+        <div class="tlx-ends"><span>1 &mdash; strongly disagree</span><span>7 &mdash; strongly agree</span></div>
       </div>
-      <div class="btn-row"><button class="btn btn-ghost" data-side="none">They seem the same</button></div>`;
-    show('compare');
+      <p class="warn" id="ratingWarn" hidden>Please choose a number from 1 to 7.</p>
+      <label class="field">
+        <span class="field-label">What, if anything, felt wrong about this
+          numbering? (optional)</span>
+        <textarea id="blockComment" rows="3" placeholder="Anything at all"></textarea>
+      </label>
+      <div class="btn-row"><button class="btn btn-big" id="next">Continue</button></div>`;
+    show('questionnaire');
 
-    const build = (containerId, schemeIndex) => {
-      const scheme = buildScheme(city, schemes[schemeIndex].key);
-      const view = new MapView($(containerId), {
-        roadWidth: 1.6, tooltipHtml: () => '', maxLabels: 120,
-      });
-      view.setNetwork({
-        bbox: city.bbox,
-        roads: {
-          type: 'FeatureCollection',
-          features: city.roads.map((r) => ({
-            type: 'Feature', id: r.i,
-            geometry: { type: 'LineString', coordinates: r.g },
-            properties: { road_id: r.i, orientation: r.o, length_m: r.len, name: null },
-          })),
-        },
-        nodes: null,
-      });
-      view.setLabels(Object.fromEntries(
-        Object.entries(scheme.numbers).map(([k, v]) => [k, String(v)])));
-      // Same conventions as the task map, so the comparison is between the
-      // numberings and not between two different ways of drawing them.
-      for (const road of view.roads) {
-        view.setRoadStyle(road.id, {
-          color: scheme.colourOf(road.id),
-          width: scheme.isBucketed(road.id) ? 1.6 * 1.7 : null,
-        });
-      }
-      return view;
-    };
-
-    const left = build('miniLeft', pair.left);
-    const right = build('miniRight', pair.right);
-    const started = performance.now();
-
-    for (const button of el.querySelectorAll('[data-side]')) {
-      button.addEventListener('click', () => {
-        const side = button.dataset.side;
-        state.preference.push({
-          leftAlgorithm: schemes[pair.left].key,
-          rightAlgorithm: schemes[pair.right].key,
-          chose: side === 'none' ? null
-            : schemes[side === 'left' ? pair.left : pair.right].key,
-          ms: Math.round(performance.now() - started),
-        });
-        save();
-        left.destroy();
-        right.destroy();
-        resolve();
-      });
+    // Which sliders were actually moved. An untouched slider records its
+    // starting 50, which is indistinguishable from a deliberate 50 unless this
+    // is kept.
+    const touched = new Set();
+    for (const [key] of TLX_ITEMS) {
+      el.querySelector(`#tlx-${key}`).addEventListener('input', () => touched.add(key));
     }
+
+    el.querySelector('#next').addEventListener('click', () => {
+      const rating = el.querySelector('input[name="couldBeReal"]:checked');
+      if (!rating) {
+        el.querySelector('#ratingWarn').hidden = false;
+        el.querySelector('.rating-item').scrollIntoView({ behavior: 'smooth', block: 'center' });
+        return;
+      }
+      const answers = Object.fromEntries(
+        TLX_ITEMS.map(([key]) => [key, Number(el.querySelector(`#tlx-${key}`).value)]));
+      // "Your performance" runs the other way - higher is better - so it is
+      // flipped before averaging, as the standard NASA-TLX scoring requires.
+      const raw = (answers.mental + answers.physical + answers.temporal
+        + (100 - answers.performance) + answers.effort + answers.frustration) / 6;
+      const common = {
+        blockIndex: block.blockIndex,
+        algorithm: block.algorithm.key,
+        scheme: block.algorithm.label,
+        city: block.city.id,
+      };
+      state.tlx.push({
+        ...common,
+        ...answers,
+        rawTlx: Math.round(raw * 10) / 10,
+        untouched: TLX_ITEMS.map(([key]) => key).filter((key) => !touched.has(key)),
+      });
+      state.ratings.push({
+        ...common,
+        couldBeReal: Number(rating.value),
+        comment: el.querySelector('#blockComment').value.slice(0, 1000),
+      });
+      save();
+      resolve();
+    });
   });
 }
-
-async function contextScreen(blocks) {
-  if (state.context.length) return;
-  const seen = [...new Set(blocks.map((b) => b.city.city))];
-  for (const cityName of seen) {
-    const el = await screen('questionnaire', `
-      <h1>About the ${cityName} maps</h1>
-      <label class="field">
-        <span class="field-label">"The numbering I saw matches how addresses
-          work where I live." (1 = strongly disagree, 7 = strongly agree)</span>
-        <input type="range" id="ctx1" min="1" max="7" step="1" value="4">
-        <output class="range-out" id="ctx1out">4</output>
-      </label>
-      <label class="field">
-        <span class="field-label">"I could imagine a numbering like this being
-          used in a real city." (1 = strongly disagree, 7 = strongly agree)</span>
-        <input type="range" id="ctx2" min="1" max="7" step="1" value="4">
-        <output class="range-out" id="ctx2out">4</output>
-      </label>
-      <label class="field">
-        <span class="field-label">What, if anything, felt wrong about the
-          numbering? (optional)</span>
-        <textarea id="ctx3" rows="3" placeholder="Anything at all"></textarea>
-      </label>
-      <div class="btn-row"><button class="btn btn-big" id="next">Continue</button></div>`);
-
-    for (const n of ['1', '2']) {
-      const input = el.querySelector(`#ctx${n}`);
-      const out = el.querySelector(`#ctx${n}out`);
-      input.addEventListener('input', () => { out.textContent = input.value; });
-    }
-
-    state.context.push({
-      city: cityName,
-      matchesHome: Number(el.querySelector('#ctx1').value),
-      couldBeReal: Number(el.querySelector('#ctx2').value),
-      comment: el.querySelector('#ctx3').value.slice(0, 1000),
-    });
-    save();
-  }
-}
-
 
 // -- finish ----------------------------------------------------------------
 

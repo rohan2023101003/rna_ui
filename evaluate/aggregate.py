@@ -30,7 +30,6 @@ import json
 import os
 import sys
 import warnings
-from collections import defaultdict
 
 import numpy as np
 import pandas as pd
@@ -151,6 +150,13 @@ def expected_trials(session) -> int:
     against what *their* session was configured to do. A fixed threshold would
     throw away every short session as if it were abandoned.
     """
+    # The study records what each block actually planned. A small network can
+    # legitimately supply fewer trials than configured rather than repeat an
+    # answer, and that session is complete, not abandoned.
+    plan = session.get("plan") or []
+    if plan:
+        return sum(int(p.get(task, 0) or 0)
+                   for p in plan for task in ("infer", "find", "navigate")) or 1
     counts = session.get("trialCounts") or {}
     per_scheme = sum(int(counts.get(task, 0) or 0)
                      for task in ("infer", "find", "navigate"))
@@ -189,6 +195,13 @@ def quality_flags(session):
         flags.append(f"{len(impossible)} journey(s) shorter than the shortest "
                      "possible route - route deviation cannot be trusted")
     return flags
+
+
+def _flag(value):
+    """True/False as 1.0/0.0, missing as NaN - so a mean skips what was not asked."""
+    if value is None:
+        return np.nan
+    return 1.0 if value else 0.0
 
 
 def to_frame(sessions, field="trials") -> pd.DataFrame:
@@ -240,6 +253,13 @@ def to_frame(sessions, field="trials") -> pd.DataFrame:
                 "actual": t.get("actual"), "guess": t.get("guess"),
                 "error_abs": t.get("errorAbs"), "error_norm": t.get("errorNorm"),
                 "parity_match": t.get("parityMatch"),
+                # The odd/even rule. `rule_followed`: the guess had the parity
+                # the road's direction calls for. `rule_holds`: so does the
+                # scheme's real number. Different findings, kept apart.
+                "orientation": t.get("orientation"),
+                "rule_parity": t.get("ruleParity"),
+                "rule_followed": _flag(t.get("ruleFollowed")),
+                "rule_holds": _flag(t.get("ruleHolds")),
                 "number_range": t.get("numberRange"),
                 "found": t.get("found"), "gave_up": t.get("gaveUp"),
                 "wrong_clicks": t.get("wrongClicks"),
@@ -251,6 +271,14 @@ def to_frame(sessions, field="trials") -> pd.DataFrame:
                 # The shortest route that existed, recorded by the study so
                 # route deviation can be checked rather than taken on trust.
                 "best_moves": (len(t["bestPath"]) - 1) if t.get("bestPath") else None,
+                # Distance, the secondary route measure: midpoint to midpoint.
+                "route_metres": t.get("routeMetres"),
+                "shortest_metres": t.get("shortestMetres"),
+                "route_deviation_m": t.get("routeDeviationMetres"),
+                # Shown the "nearly out of time" notice during this trial.
+                "time_warned": _flag(t.get("warned")),
+                # Soft trial-selection rules dropped to fill this trial, if any.
+                "relaxed": ";".join(t.get("relaxed") or []),
                 "correct": t.get("correct"),
                 "answer": t.get("answer"), "correct_answer": t.get("correctAnswer"),
             })
@@ -273,6 +301,8 @@ def to_frame(sessions, field="trials") -> pd.DataFrame:
 MEASURES = [
     ("parity_agreement", "Parity agreement (odd/even)", "pct", "high",
      lambda d: d[d.task == "infer"].groupby(GROUP)["parity_match"].mean()),
+    ("rule_followed", "Guess follows the odd/even rule", "pct", "high",
+     lambda d: d[d.task == "infer"].groupby(GROUP)["rule_followed"].mean()),
     ("infer_error", "Inference error (normalised)", "num3", "low",
      lambda d: d[d.task == "infer"].groupby(GROUP)["error_norm"].mean()),
     ("infer_success", "Inference success rate", "pct", "high",
@@ -293,8 +323,10 @@ MEASURES = [
      lambda d: d[d.task == "find"].groupby(GROUP)["effort"].mean()),
     ("nav_success", "Journey completion", "pct", "high",
      lambda d: d[d.task == "navigate"].groupby(GROUP)["arrived"].mean()),
-    ("route_deviation", "Route deviation", "num2", "low",
+    ("route_deviation", "Route deviation (steps)", "num2", "low",
      lambda d: d[d.task == "navigate"].groupby(GROUP)["route_deviation"].median()),
+    ("route_deviation_m", "Route deviation (distance)", "num2", "low",
+     lambda d: d[d.task == "navigate"].groupby(GROUP)["route_deviation_m"].median()),
     ("wayfinding_errors", "Wayfinding errors per journey", "num2", "low",
      lambda d: d[d.task == "navigate"].groupby(GROUP)["wayfinding_errors"].mean()),
     ("backtracks", "Backtracks per journey", "num2", "low",
@@ -331,6 +363,22 @@ def tlx_frame(sessions) -> pd.DataFrame:
                          "city": e.get("city"), "raw_tlx": e["rawTlx"],
                          "mental": e["mental"], "frustration": e["frustration"],
                          "effort_rating": e["effort"]})
+    return pd.DataFrame(rows)
+
+
+def ratings_frame(sessions) -> pd.DataFrame:
+    """One row per participant per scheme: the end-of-block rating and comment.
+
+    Asked after each block rather than once at the end, because a single rating
+    given after four different schemes cannot be attributed to any of them.
+    """
+    rows = []
+    for s in sessions:
+        for e in s.get("ratings") or []:
+            rows.append({"participant": s["participantId"],
+                         "algorithm": e.get("algorithm"), "scheme": e.get("scheme"),
+                         "city": e.get("city"), "could_be_real": e.get("couldBeReal"),
+                         "comment": (e.get("comment") or "").strip()})
     return pd.DataFrame(rows)
 
 
@@ -473,43 +521,6 @@ def draw_charts(table: pd.DataFrame, algorithms: list[str]):
 
 
 # --------------------------------------------------------------------------
-# Preference ranking
-# --------------------------------------------------------------------------
-
-def bradley_terry(comparisons, rounds=500):
-    """Rank schemes from pairwise wins, on a scale where 1.0 is average.
-
-    Counting wins alone would reward a scheme that happened to be compared
-    against weak opponents. Bradley-Terry instead fits each scheme a strength
-    such that the chance of i beating j is s_i / (s_i + s_j), so beating a
-    strong scheme counts for more than beating a weak one. That matters here
-    because each participant sees only some of the schemes, so different
-    schemes meet different opponents.
-
-    Fitted by the standard MM iteration, rescaled each round so the strengths
-    average 1.0 (the scale is arbitrary - only the ratios mean anything).
-    """
-    items = sorted({a for pair in comparisons for a in pair})
-    wins = defaultdict(int)
-    played = defaultdict(int)
-    for winner, loser in comparisons:
-        wins[winner] += 1
-        played[(winner, loser)] += 1
-        played[(loser, winner)] += 1
-
-    strength = {i: 1.0 for i in items}
-    for _ in range(rounds):
-        updated = {}
-        for i in items:
-            denominator = sum(played[(i, j)] / (strength[i] + strength[j])
-                              for j in items if j != i and played[(i, j)])
-            updated[i] = wins[i] / denominator if denominator > 0 and wins[i] else 1e-9
-        total = sum(updated.values())
-        strength = {k: v * len(items) / total for k, v in updated.items()}
-    return strength
-
-
-# --------------------------------------------------------------------------
 # The results table
 # --------------------------------------------------------------------------
 
@@ -604,6 +615,10 @@ def main() -> int:
     if not practice.empty:
         print(f"  {len(practice)} warm-up trials, kept separately and not "
               "analysed here")
+    relaxed = int((df["relaxed"].fillna("") != "").sum()) if "relaxed" in df else 0
+    if relaxed:
+        print(f"  {relaxed} trial(s) needed a soft selection rule relaxed because the "
+              "network ran out - see the `relaxed` column")
 
     flagged = [(s["participantId"], quality_flags(s)) for s in sessions]
     flagged = [(p, f) for p, f in flagged if f]
@@ -655,49 +670,29 @@ def main() -> int:
                                 "value": float(np.nanmean(values)) if len(values) else np.nan,
                                 "ci_low": lo, "ci_high": hi, "n": len(values)})
 
+    ratings = ratings_frame(sessions)
+    if not ratings.empty:
+        for algo in algorithms:
+            values = ratings[ratings.algorithm == algo]["could_be_real"].dropna() \
+                .to_numpy(dtype=float)
+            lo, hi = bootstrap_ci(values)
+            records.append({"measure": "could_be_real",
+                            "label": "Could be used in a real city (1-7)",
+                            "kind": "num2", "better": "high", "algorithm": algo,
+                            "value": float(np.nanmean(values)) if len(values) else np.nan,
+                            "ci_low": lo, "ci_high": hi, "n": len(values)})
+
     table = pd.DataFrame(records)
 
     print_results(table, algorithms)
-
-    # -- preference --------------------------------------------------------
-    comparisons = []
-    for s in sessions:
-        for pref in s.get("preference", []):
-            if pref.get("chose"):
-                winner = pref["chose"]
-                loser = (pref["rightAlgorithm"] if winner == pref["leftAlgorithm"]
-                         else pref["leftAlgorithm"])
-                comparisons.append((winner, loser))
-    if comparisons:
-        strength = bradley_terry(comparisons)
-        wins = defaultdict(int)
-        for w, _ in comparisons:
-            wins[w] += 1
-        print("\n" + "-" * 78)
-        print("  WHICH SCHEME PEOPLE PREFERRED    (Bradley-Terry, 1.0 = average)")
-        print("-" * 78)
-        for algo, score in sorted(strength.items(), key=lambda kv: -kv[1]):
-            plays = sum(1 for w, l in comparisons if algo in (w, l))
-            print(f"  {SCHEME_NAMES.get(algo, algo)[:28].ljust(30)} {score:5.2f}"
-                  f"   {wins[algo]:3d}/{plays:3d} wins  {'#' * int(min(38, score * 13))}")
-
-    # -- context -----------------------------------------------------------
-    ctx = [(e["city"], e["matchesHome"], e["couldBeReal"])
-           for s in sessions for e in s.get("context", [])]
-    if ctx:
-        cdf = pd.DataFrame(ctx, columns=["city", "matches_home", "could_be_real"])
-        print("\n" + "-" * 78)
-        print("  CONTEXTUAL APPROPRIATENESS   (1-7, higher is better)")
-        print("-" * 78)
-        for city, g in cdf.groupby("city"):
-            print(f"  {city.ljust(16)} matches home: {g['matches_home'].mean():.2f}"
-                  f"    could be real: {g['could_be_real'].mean():.2f}   (n={len(g)})")
 
     # -- files -------------------------------------------------------------
     os.makedirs(OUT_DIR, exist_ok=True)
     df.to_csv(os.path.join(OUT_DIR, "trials.csv"), index=False)
     if not practice.empty:
         practice.to_csv(os.path.join(OUT_DIR, "practice.csv"), index=False)
+    if not ratings.empty:
+        ratings.to_csv(os.path.join(OUT_DIR, "ratings.csv"), index=False)
     table.to_csv(os.path.join(OUT_DIR, "summary.csv"), index=False)
 
     lines = ["MIXED-EFFECTS MODELS", "=" * 74, "",
@@ -718,6 +713,9 @@ def main() -> int:
     print(f"  Wrote {OUT_DIR}/trials.csv    ({len(df)} rows, one per scored trial)")
     if not practice.empty:
         print(f"  Wrote {OUT_DIR}/practice.csv  ({len(practice)} rows, the warm-up)")
+    if not ratings.empty:
+        print(f"  Wrote {OUT_DIR}/ratings.csv   ({len(ratings)} rows, rating + comment "
+              "per scheme)")
     print(f"  Wrote {OUT_DIR}/summary.csv   (the table above)")
     print(f"  Wrote {OUT_DIR}/models.txt    (mixed-effects models)")
     if figures:

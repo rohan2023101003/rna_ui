@@ -21,7 +21,7 @@ server can be launched from any working directory.
 
 > **Running the human study?** See **[evaluate/README.md](evaluate/README.md)** —
 > a self-contained 30-minute study that participants run in their browser with
-> no install and no server, on any of the six networks with any 2-6 of the
+> no install and no server, on any of the six networks with any 1-6 of the
 > seventeen numbering schemes, plus the script that turns their result files
 > into the final numbers.
 >
@@ -120,6 +120,7 @@ evaluate/              the human study - see evaluate/README.md
   build_bundle.py      bakes all 6 networks x 17 algorithms into js/
   tests/check_design.mjs  checks the design without a browser
   tests/check_review.mjs  checks the review screen against a real DOM
+  tests/check_flow.mjs    runs the whole study in a real DOM and checks the result file
   tests/check_metrics.py  checks every measure against a hand-computed answer
   aggregate.py         40 result files -> final results + tidy CSV
 analysis/

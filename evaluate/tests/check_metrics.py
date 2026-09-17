@@ -41,8 +41,13 @@ def check(name, got, want, tol=1e-9):
 # Session builders
 # --------------------------------------------------------------------------
 
-def infer_trial(i, algo, actual, guess, rng=100, ms=5000, **kw):
+def infer_trial(i, algo, actual, guess, rng=100, ms=5000, orientation="NS", **kw):
     error = abs(guess - actual)
+    rule = {"NS": "odd", "EW": "even"}.get(orientation)
+    kw = {"orientation": orientation, "ruleParity": rule,
+          "ruleFollowed": None if rule is None else (guess % 2 == 1) == (rule == "odd"),
+          "ruleHolds": None if rule is None else (actual % 2 == 1) == (rule == "odd"),
+          **kw}
     return {"key": f"b0:infer:{i}", "trialIndex": i, "blockIndex": 0,
             "algorithm": algo, "scheme": "Scheme A", "city": "Brooklyn/Network-1",
             "task": "infer", "roadId": i + 1, "actual": actual, "guess": guess,
@@ -66,12 +71,16 @@ def nav_trial(i, algo, arrived, moves, shortest, errors=0, backtracks=0, ms=3000
             "task": "navigate", "from": 1, "to": 9, "targetNumber": 20 + i,
             "arrived": arrived, "moves": moves, "shortestHops": shortest,
             "routeDeviation": (moves / shortest) if arrived else None,
+            # 100 m per step, so distance deviation equals step deviation here
+            # and the two measures can be checked against the same numbers.
+            "routeMetres": moves * 100.0, "shortestMetres": shortest * 100.0,
+            "routeDeviationMetres": (moves / shortest) if arrived else None,
             "wayfindingErrors": errors, "backtracks": backtracks,
             "ms": ms, "pans": 3, "zooms": 2, "clicks": moves, "hovers": 5}
 
 
-def session(pid, trials, tlx=None, counts=None, schemes=None, preference=None,
-            practice=None):
+def session(pid, trials, tlx=None, counts=None, schemes=None, practice=None,
+            ratings=None, plan=None):
     return {
         "version": 2, "participantId": pid,
         "startedAt": "2026-09-11T09:00:00Z", "finishedAt": "2026-09-11T09:30:00Z",
@@ -81,8 +90,7 @@ def session(pid, trials, tlx=None, counts=None, schemes=None, preference=None,
         "background": {"age": "25-34", "mapUse": "Every day",
                        "familiarity": {"Brooklyn": 3}},
         "trials": trials, "practiceTrials": practice or [],
-        "tlx": tlx or [], "preference": preference or [],
-        "context": [],
+        "tlx": tlx or [], "ratings": ratings or [], "plan": plan or [],
         "userAgent": "test", "screen": None, "_file": f"P{pid}.json",
     }
 
@@ -123,6 +131,8 @@ trials = [
 df = agg.to_frame([session(1, trials)])
 
 check("parity agreement           2 of 4", measure(df, "parity_agreement"), 0.5)
+# Every road here runs N-S, so the rule says odd: 50 no, 55 yes, 70 no, 40 no.
+check("guess follows odd/even rule  1 of 4", measure(df, "rule_followed"), 0.25)
 check("inference error   mean(0,.05,.2,.11)", measure(df, "infer_error"), 0.09)
 check("inference success  2 of 4 within 10%", measure(df, "infer_success"), 0.5)
 check("time per guess     median(4,6,8,10)s", measure(df, "infer_time"), 7.0)
@@ -134,6 +144,7 @@ check("pans+zooms while finding   2+3", measure(df, "find_panzoom"), 5.0)
 check("interaction effort   2+3+1+4", measure(df, "find_effort"), 10.0)
 check("journey completion         2 of 3", measure(df, "nav_success"), 2 / 3)
 check("route deviation   median(1.5,1.0)", measure(df, "route_deviation"), 1.25)
+check("route deviation by distance, same", measure(df, "route_deviation_m"), 1.25)
 check("wayfinding errors  mean(2,0,4)", measure(df, "wayfinding_errors"), 2.0)
 check("backtracks         mean(1,0,2)", measure(df, "backtracks"), 1.0)
 
@@ -247,7 +258,7 @@ check("the warm-up does not count towards completeness",
       agg.expected_trials(both), 1)
 
 # --------------------------------------------------------------------------
-print("\nQuestionnaires and the preference ranking")
+print("\nQuestionnaires")
 print("-" * 96)
 
 # Raw TLX: performance is reversed before averaging, per the standard scoring.
@@ -258,15 +269,31 @@ tlx = [{"blockIndex": 0, "algorithm": "mucs", "scheme": "Scheme A",
 frame = agg.tlx_frame([session(7, trials, tlx=tlx)])
 check("raw TLX  (60+20+40+20+50+30)/6", frame["raw_tlx"].iloc[0], 220 / 6)
 
-# Bradley-Terry: A beats B every time, B beats C every time.
-prefs = ([{"leftAlgorithm": "mucs", "rightAlgorithm": "bfs", "chose": "mucs", "ms": 1}] * 6
-         + [{"leftAlgorithm": "bfs", "rightAlgorithm": "dfs", "chose": "bfs", "ms": 1}] * 6)
-strength = agg.bradley_terry([(p["chose"],
-                               p["rightAlgorithm"] if p["chose"] == p["leftAlgorithm"]
-                               else p["leftAlgorithm"]) for p in prefs])
-ordered = sorted(strength, key=lambda k: -strength[k])
-check("Bradley-Terry ranks A > B > C",
-      1.0 if ordered == ["mucs", "bfs", "dfs"] else 0.0, 1.0)
+
+# One rating per scheme, with its comment, asked at the end of each block.
+rated = session(15, trials, ratings=[
+    {"blockIndex": 0, "algorithm": "mucs", "scheme": "Scheme A",
+     "city": "Brooklyn/Network-1", "couldBeReal": 6, "comment": "  zones confused me "},
+    {"blockIndex": 1, "algorithm": "bfs", "scheme": "Scheme B",
+     "city": "Brooklyn/Network-1", "couldBeReal": 2, "comment": ""},
+])
+rf = agg.ratings_frame([rated])
+check("one rating row per scheme", len(rf), 2)
+check("rating kept against its own scheme",
+      rf[rf.algorithm == "mucs"]["could_be_real"].iloc[0], 6)
+check("comment kept, whitespace trimmed",
+      1.0 if rf[rf.algorithm == "mucs"]["comment"].iloc[0] == "zones confused me" else 0.0, 1.0)
+
+# A trial with no road direction (a diagonal, say) must not count as breaking
+# the rule: it is missing, and the mean skips it.
+mixed = [infer_trial(0, "mucs", 50, 51), infer_trial(1, "mucs", 50, 51, orientation=None)]
+check("a road with no direction is left out of rule use",
+      measure(agg.to_frame([session(18, mixed)]), "rule_followed"), 1.0)
+
+relaxed = dict(infer_trial(0, "mucs", 50, 50), relaxed=["spacing", "number-reused"])
+check("soft selection rules relaxed are carried through",
+      1.0 if agg.to_frame([session(19, [relaxed])]).iloc[0]["relaxed"]
+      == "spacing;number-reused" else 0.0, 1.0)
 
 # --------------------------------------------------------------------------
 print("\nCompleteness check adapts to the session's own trial counts")
@@ -278,6 +305,14 @@ check("a 4-trial session is complete when it says so",
       agg.expected_trials(short_session), 4)
 check("...and is not excluded",
       1.0 if len(short_session["trials"]) >= agg.expected_trials(short_session) else 0.0, 1.0)
+# A small network may supply fewer trials than configured rather than repeat an
+# answer. The study records what each block actually planned, and that wins.
+planned = session(16, rates(2, 1, 1),
+                  counts={"infer": 14, "find": 4, "navigate": 3},
+                  plan=[{"blockIndex": 0, "algorithm": "mucs",
+                         "infer": 2, "find": 1, "navigate": 1}])
+check("what was planned wins over what was configured",
+      agg.expected_trials(planned), 4)
 missing = session(9, rates(2, 1, 0),
                   counts={"infer": 2, "find": 1, "navigate": 1, "practice": 0})
 check("a session missing a journey is excluded",
